@@ -49,8 +49,8 @@ class FOSCliState(IntEnum):
     UNKNOWN = auto()  # Non-patterns from here on.
     TN_TIMEOUT = auto()
 
+DEFAULT_HOSTNAME_PROMPT = rb"(?m)^\s*[A-Za-z0-9_.-]+(?:-VM64)?-KVM(?:\s+\((?:STS|Interim)\))?\s*[#$]\s*"
 
-DEFAULT_HOSTNAME_PROMPT = rb"(?m)^\s*[A-Za-z0-9_.-]+(?:-VM64)?-KVM(?:\s+\([^)]*\))?\s*#\s*"
 FOS_CLI_STATE_PATTERNS = [None] * FOSCliState.UNKNOWN.value
 FOS_CLI_STATE_PATTERNS[FOSCliState.PROVIDE_USERNAME.value] = (
     rb"\n[A-Za-z0-9_.-]+(?:-VM64)?-KVM"
@@ -239,8 +239,8 @@ class FortiOS_vm(vrnetlab.VM):
                 rb"(?m)^ ?"
                 + re.escape(self.hostname.encode("utf-8"))
                 + rb" ?"
-                + rb"(?:\([^)]*\))?"
-                + rb" ?# ?"
+                + rb"(?:\s+\((?:STS|Interim)\))?"
+                + rb" ?[#$] ?"
         )
 
     def _ready(self):
