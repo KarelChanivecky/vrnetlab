@@ -2,11 +2,11 @@
 import datetime
 import logging
 import os
-from collections import deque
 import re
 import signal
 import sys
 import uuid
+from collections import deque
 from enum import auto, IntEnum
 
 import vrnetlab
@@ -49,8 +49,8 @@ class FOSCliState(IntEnum):
     UNKNOWN = auto()  # Non-patterns from here on.
     TN_TIMEOUT = auto()
 
-DEFAULT_HOSTNAME_PROMPT = rb"(?m)^\s*[A-Za-z0-9_.-]+(?:-VM64)?-KVM(?:\s+\((?:STS|Interim)\))?\s*[#$]\s*"
 
+DEFAULT_HOSTNAME_PROMPT = rb"(?m)^\s*[A-Za-z0-9_.-]+(?:-VM64)?-KVM(?:\s+\((?:STS|Interim)\))?\s*[#$]\s*"
 FOS_CLI_STATE_PATTERNS = [None] * FOSCliState.UNKNOWN.value
 FOS_CLI_STATE_PATTERNS[FOSCliState.PROVIDE_USERNAME.value] = (
     rb"\n[A-Za-z0-9_.-]+(?:-VM64)?-KVM"
@@ -64,6 +64,8 @@ FOS_CLI_STATE_PATTERNS[FOSCliState.CREDENTIAL_ACCEPTED.value] = rb"(?m)^Welcome 
 FOS_CLI_STATE_PATTERNS[FOSCliState.CMD_PROMPT.value] = DEFAULT_HOSTNAME_PROMPT
 FOS_CLI_STATE_PATTERNS[FOSCliState.SHUTTING_DOWN.value] = b"system is going down"
 FOS_CLI_STATE_PATTERNS[FOSCliState.REBOOTING.value] = b"stand by while rebooting"
+
+STARTUP_CONFIG_FILE = "/config/startup-config.cfg"
 
 
 class FortiOS_vm(vrnetlab.VM):
@@ -122,6 +124,7 @@ class FortiOS_vm(vrnetlab.VM):
         self._last_known_state = FOSCliState.UNKNOWN
         self._cmd_queue = deque()
         self._cmd_queue.append(self._update_hostname)
+        self._cmd_queue.append(self._apply_startup_config)
         self._tried_v7_default_password = False
         self._cred_rejected = False
 
@@ -242,6 +245,40 @@ class FortiOS_vm(vrnetlab.VM):
                 + rb"(?:\s+\((?:STS|Interim)\))?"
                 + rb" ?[#$] ?"
         )
+
+    def _apply_startup_config(self):
+        """Load additional config provided by user."""
+
+        if not os.path.exists(STARTUP_CONFIG_FILE):
+            self.logger.trace(f"Startup config file {STARTUP_CONFIG_FILE} is not found")
+            return
+
+        self.logger.trace(f"Configuring with startup-config from file: {STARTUP_CONFIG_FILE}")
+        config_lines = []
+        with open(STARTUP_CONFIG_FILE) as file:
+            config_lines = file.readlines()
+
+        config_stack = deque()
+
+        for line in config_lines:
+            sline = line.strip()
+            if sline.startswith("config"):
+                config_stack.append("c")
+            if sline.startswith("edit"):
+                config_stack.append("e")
+            if sline.startswith("next") or sline.startswith("end"):
+                top = config_stack.pop()
+                if sline.startswith("next") and top != "e":
+                    self.logger.error("Startup config malformed. \"next\" command outside of edit scope.")
+                    raise ValueError("Startup config malformed. \"next\" command outside of edit scope.")
+                if sline.startswith("end") and top != "c":
+                    self.logger.error("Startup config malformed. \"end\" command outside of config scope.")
+                    raise ValueError("Startup config malformed. \"end\" command outside of config scope.")
+            # Maintaining nesting produces a more appealing debug log.
+            self.wait_write(line, wait=None)
+
+        if len(config_stack) > 0:
+            raise ValueError("Startup config malformed. Unmatched config or edit brackets.")
 
     def _ready(self):
         self.running = True
