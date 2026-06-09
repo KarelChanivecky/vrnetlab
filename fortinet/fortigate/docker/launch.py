@@ -86,7 +86,7 @@ class FortiOS_vm(vrnetlab.VM):
             driveif="virtio",
             # fortios fails to respond to network requests if the pci bus is setup :D
             provision_pci_bus=False,
-            mgmt_passthrough=True,
+            mgmt_passthrough=True
         )
         self.conn_mode = conn_mode
         self.hostname = hostname
@@ -126,7 +126,9 @@ class FortiOS_vm(vrnetlab.VM):
         self._last_known_state = FOSCliState.UNKNOWN
         self._cmd_queue = deque()
         if self.mgmt_passthrough:
-            self._cmd_queue.append(self._apply_mgmt_ip)
+            self._cmd_queue.append(self._apply_mgmt_ip_passthrough)
+        else:
+            self._cmd_queue.append(self._apply_mgmt_ip_host_forwarded)
         self._cmd_queue.append(self._update_hostname)
         self._cmd_queue.append(self._apply_startup_config)
         self._tried_v7_default_password = False
@@ -237,7 +239,7 @@ class FortiOS_vm(vrnetlab.VM):
 
     # === COMMANDS ===
 
-    def _apply_mgmt_ip(self):
+    def _apply_mgmt_ip_passthrough(self):
         if self.mgmt_address_ipv4 == "dhcp":
             self.logger("MGMT IP is in DHCP mode")
             return
@@ -245,7 +247,8 @@ class FortiOS_vm(vrnetlab.VM):
         self.wait_write("config system interface\r"
                         "edit port1\r"
                         "set mode static\r"
-                        f"set ip {self.mgmt_address_ipv4}",
+                        f"set ip {self.mgmt_address_ipv4}\r"
+                        "set vrf 1",
                         wait=None)
         if self.mgmt_address_ipv6 is not None:
             self.wait_write("config ipv6\r"
@@ -257,6 +260,14 @@ class FortiOS_vm(vrnetlab.VM):
         self.wait_write("next\r"
                         "end",
                         wait=None)
+
+    def _apply_mgmt_ip_host_forwarded(self):
+        self.wait_write("config system interface\r"
+                        "edit port1"
+                        , wait=None)
+        self.wait_write("set vrf 1\r"
+                        "next\r"
+                        "end", wait="(port1)")
 
     def _update_hostname(self):
         self.wait_write("config system global", wait=None)
