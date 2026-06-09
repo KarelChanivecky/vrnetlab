@@ -6,10 +6,11 @@ import re
 import signal
 import sys
 import uuid
+import vrnetlab
 from collections import deque
 from enum import auto, IntEnum
 
-import vrnetlab
+from tftp import TFTP_FAKEHOST_VETH_MAC_ADDR, TFTPServer
 
 
 def handle_SIGCHLD(_unused_signal, _unused_frame):
@@ -76,7 +77,6 @@ class FortiOS_vm(vrnetlab.VM):
             if re.search(".qcow2$", e):
                 disk_image = "./" + e
         if disk_image is None:
-            self.logger.critical("Failed to find device image")
             raise RuntimeError("Could not find image to boot")
         super(FortiOS_vm, self).__init__(
             username,
@@ -327,6 +327,79 @@ class FortiOS_vm(vrnetlab.VM):
         startup_time = datetime.datetime.now() - self.start_time
         self.logger.info(f"Startup complete in {startup_time}")
 
+    # === vrnetlab.VM overrides ===
+
+    def create_tc_tap_mgmt_ifup(self):
+        # override the parent's function with sros requirements
+        # this is used when using pass-through mode for mgmt connectivity
+        """Create tap ifup script that is used in tc datapath mode, specifically for the management interface"""
+        ifup_script = """#!/bin/bash
+
+        ip link set tap0 up
+        ip link set tap0 mtu 65000
+
+        # create tc eth<->tap redirect rules
+
+        tc qdisc add dev eth0 clsact
+        # exception for TCP ports 5000-5007
+        tc filter add dev eth0 ingress prio 1 protocol ip flower ip_proto tcp dst_port 5000-5007 action pass
+        # mirror ARP traffic to container
+        tc filter add dev eth0 ingress prio 2 protocol arp flower action mirred egress mirror dev tap0
+        # redirect rest of ingress traffic of eth0 to egress of tap0
+        tc filter add dev eth0 ingress prio 3 flower action mirred egress redirect dev tap0
+
+        tc qdisc add dev tap0 clsact
+        # redirect tftp traffic to fakehost ns
+        tc filter add dev tap0 ingress protocol ip prio 1	\
+            flower ip_proto udp dst_port 69 dst_ip {MGMT_CONTAINER_GW} 	\
+            action pedit ex munge eth dst set {TFTP_FAKEHOST_VETH_MAC_ADDR} pipe \
+            action mirred egress redirect dev RA
+
+        tc filter add dev tap0 ingress protocol ip prio 2	\
+            flower ip_proto udp dst_port 52400-52500 dst_ip {MGMT_CONTAINER_GW} 	\
+            action pedit ex munge eth dst set {TFTP_FAKEHOST_VETH_MAC_ADDR} pipe \
+            action mirred egress redirect dev RA
+
+        # redirect all ingress traffic of tap0 to egress of eth0
+        tc filter add dev tap0 ingress flower action mirred egress redirect dev eth0
+
+        # redirect tftp traffic coming from ns to the mgmt address of the sros VM
+        # Mac rewrite because by default dst mac will be that of the RA link
+        tc qdisc add dev RA clsact
+            tc filter add dev RA ingress protocol ip prio 1	\
+            flower ip_proto udp src_port 69 dst_ip {MGMT_IP_ADDRESS} 	\
+            action pedit ex munge eth dst set {MGMT_MAC} pipe \
+            action mirred egress redirect dev tap0
+        
+        tc filter add dev RA ingress protocol ip prio 2	\
+            flower ip_proto udp src_port 52400-52500 dst_ip {MGMT_IP_ADDRESS} 	\
+            action pedit ex munge eth dst set {MGMT_MAC} pipe \
+            action mirred egress redirect dev tap0
+
+        # clone management MAC of the VM
+        ip link set dev eth0 address {MGMT_MAC}
+
+        # configure the ip address of the namespace as it was the host and remove the temporary one
+        ip netns exec fakehost ip addr add {MGMT_CONTAINER_GW}/{MGMT_IP_PREFIXLEN} dev FA
+        ip netns exec fakehost ip addr del  169.254.254.254/16 dev FA
+        """
+
+        mgmt_ip_v4_address, mgmt_ip_v4_prefixlen = self.mgmt_address_ipv4.split("/")
+
+        ifup_script = ifup_script.replace("{MGMT_MAC}", self.mgmt_mac)
+        ifup_script = ifup_script.replace(
+            "{TFTP_FAKEHOST_VETH_MAC_ADDR}", TFTP_FAKEHOST_VETH_MAC_ADDR
+        )
+        ifup_script = ifup_script.replace("{MGMT_CONTAINER_GW}", self.mgmt_gw_ipv4)
+        ifup_script = ifup_script.replace("{MGMT_IP_PREFIXLEN}", mgmt_ip_v4_prefixlen)
+        ifup_script = ifup_script.replace("{MGMT_IP_ADDRESS}", mgmt_ip_v4_address)
+        self.logger.info(f"TFTP Traffic towards {self.mgmt_gw_ipv4} redirected towards fakehost mac: "
+                    f"{TFTP_FAKEHOST_VETH_MAC_ADDR} and return traffic directed to MAC: {self.mgmt_mac}")
+
+        with open("/etc/tc-tap-mgmt-ifup", "w") as f:
+            f.write(ifup_script)
+        os.chmod("/etc/tc-tap-mgmt-ifup", 0o777)
+
 
 class FortiOS(vrnetlab.VR):
     def __init__(self, hostname, username, password, conn_mode):
@@ -360,8 +433,11 @@ if __name__ == "__main__":
     logger.setLevel(logging.DEBUG)
     if args.trace:
         logger.setLevel(1)
-    vrnetlab.boot_delay()
+
     vr = FortiOS(
         args.hostname, args.username, args.password, conn_mode=args.connection_mode
     )
+    tftp_server = TFTPServer(vr.vms[0].mgmt_passthrough)
+    tftp_server.launch()
+    vrnetlab.boot_delay()
     vr.start()
