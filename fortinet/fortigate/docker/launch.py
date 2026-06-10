@@ -6,10 +6,10 @@ import re
 import signal
 import sys
 import uuid
-import vrnetlab
 from collections import deque
 from enum import auto, IntEnum
 
+import vrnetlab
 from tftp import TFTP_FAKEHOST_VETH_MAC_ADDR, TFTPServer
 
 
@@ -44,6 +44,7 @@ class FOSCliState(IntEnum):
     CHANGE_PASSWORD = auto()
     CREDENTIAL_REJECTED = auto()
     CREDENTIAL_ACCEPTED = auto()
+    LIC_FAIL = auto()
     CMD_PROMPT = auto()
     SHUTTING_DOWN = auto()
     REBOOTING = auto()
@@ -52,6 +53,7 @@ class FOSCliState(IntEnum):
 
 
 DEFAULT_HOSTNAME_REGEX = rb"[A-Za-z0-9_.-]+(?:-VM64)?-KVM(?:-[A-Za-z0-9]*)?"
+OLD_LIC_HOSTNAME_REGEX = rb"[A-Z]{4,}[0-9]{4,}"
 DEFAULT_HOSTNAME_PROMPT = rb"(?m)^\s*" + DEFAULT_HOSTNAME_REGEX + rb"(?:\s+\((?:STS|Interim)\))?\s*[#$]\s*"
 FOS_CLI_STATE_PATTERNS = [None] * FOSCliState.UNKNOWN.value
 FOS_CLI_STATE_PATTERNS[FOSCliState.PROVIDE_USERNAME.value] = (
@@ -63,11 +65,13 @@ FOS_CLI_STATE_PATTERNS[FOSCliState.CHANGE_PASSWORD.value] = b"(?m)^New Password:
 FOS_CLI_STATE_PATTERNS[FOSCliState.PROVIDE_PASSWORD.value] = b"(?m)^Password:"
 FOS_CLI_STATE_PATTERNS[FOSCliState.CREDENTIAL_REJECTED.value] = rb"(?m)^Login incorrect\r?$"
 FOS_CLI_STATE_PATTERNS[FOSCliState.CREDENTIAL_ACCEPTED.value] = rb"(?m)^Welcome ?!\r?$"
+FOS_CLI_STATE_PATTERNS[FOSCliState.LIC_FAIL.value] = rb"(?m)^VM license install failed.\r$"
 FOS_CLI_STATE_PATTERNS[FOSCliState.CMD_PROMPT.value] = DEFAULT_HOSTNAME_PROMPT
 FOS_CLI_STATE_PATTERNS[FOSCliState.SHUTTING_DOWN.value] = b"system is going down"
 FOS_CLI_STATE_PATTERNS[FOSCliState.REBOOTING.value] = b"stand by while rebooting"
 
 STARTUP_CONFIG_FILE = "/config/startup-config.cfg"
+LIC_FILE = "appliance.lic"
 
 
 class FortiOS_vm(vrnetlab.VM):
@@ -96,7 +100,7 @@ class FortiOS_vm(vrnetlab.VM):
         self.qemu_args.extend(["-uuid", os.getenv("FORTIGATE_UUID") or str(uuid.uuid4())])
         self.spins = 0
         self.running = None
-
+        self.waiting_for = False
         # set up the extra empty disk image
         # for fortigate logs
         vrnetlab.run_command(
@@ -116,6 +120,7 @@ class FortiOS_vm(vrnetlab.VM):
             FOSCliState.CHANGE_PASSWORD: self._change_password,
             FOSCliState.CREDENTIAL_REJECTED: self._credential_rejected,
             FOSCliState.CREDENTIAL_ACCEPTED: self._credential_accepted,
+            FOSCliState.LIC_FAIL: self._license_fail,
             FOSCliState.CMD_PROMPT: self._cmd_prompt,
             FOSCliState.SHUTTING_DOWN: self._shutting_down,
             FOSCliState.REBOOTING: self._rebooting,
@@ -129,10 +134,16 @@ class FortiOS_vm(vrnetlab.VM):
             self._cmd_queue.append(self._apply_mgmt_ip_passthrough)
         else:
             self._cmd_queue.append(self._apply_mgmt_ip_host_forwarded)
+        try:
+            os.stat(f"/tftpboot/{LIC_FILE}")
+            self._cmd_queue.append(self._setup_license)
+        except FileNotFoundError:
+            pass
         self._cmd_queue.append(self._update_hostname)
         self._cmd_queue.append(self._apply_startup_config)
         self._tried_v7_default_password = False
         self._cred_rejected = False
+        self.waiting_for = None
 
     def bootstrap_spin(self):
         """This function should be called periodically to do work.
@@ -159,6 +170,10 @@ class FortiOS_vm(vrnetlab.VM):
         if len(self.tn_out) > 0:
             self.logger.debug(f"OUT: {self.tn_out}")
 
+        if self.waiting_for and cur_state not in self.waiting_for:
+            return
+
+        self.waiting_for = None
         self._state_handlers[cur_state]()
 
     def _next_state(self):
@@ -221,6 +236,13 @@ class FortiOS_vm(vrnetlab.VM):
         self.tn.close()
         self.stop()
         raise RuntimeError("Credential rejected")
+
+    def _license_fail(self):
+        self.logger.error("Failed to setup license.")
+        self.running = False
+        self.tn.close()
+        self.stop()
+        raise RuntimeError("License setup failed")
 
     def _unknown_state(self):
         # no match, if we saw some output from the router it's probably
@@ -285,6 +307,30 @@ class FortiOS_vm(vrnetlab.VM):
                 + rb"(?:\s+\((?:STS|Interim)\))?"
                 + rb" ?[#$] ?"
         )
+
+    def _setup_license(self):
+        if self.mgmt_passthrough:
+            tftp_server_ip = self.mgmt_gw_ipv4
+        else:
+            mgmt_ipv4, mgmt_ipv6 = self.get_mgmt_address()
+            tftp_server_ip = mgmt_ipv4.split("/")[0]
+
+        self.logger.info(f"Setting up license {LIC_FILE} from server {tftp_server_ip}")
+
+        self.wait_write(f"exe restore vmlicense tftp {LIC_FILE} {tftp_server_ip}", wait=None)
+        self.wait_write("y", wait="Do you want to continue?")
+        self._state_patterns[FOSCliState.PROVIDE_USERNAME.value] = (
+                rb"\n(?:" + OLD_LIC_HOSTNAME_REGEX + b"|" + DEFAULT_HOSTNAME_REGEX + rb") ?" +
+                rb"(?:\((?:Primary|Secondary)\))?" +
+                rb"\s+login:\s*")
+        self._state_patterns[FOSCliState.CMD_PROMPT.value] = (
+                rb"(?m)^ ?"
+                + rb"(?:" + OLD_LIC_HOSTNAME_REGEX + b"|" + DEFAULT_HOSTNAME_REGEX + b")"
+                + rb" ?"
+                + rb"(?:\s+\((?:STS|Interim)\))?"
+                + rb" ?[#$] ?"
+        )
+        self.waiting_for = [FOSCliState.REBOOTING, FOSCliState.LIC_FAIL]
 
     def _apply_startup_config(self):
         """Load additional config provided by user."""
@@ -394,7 +440,7 @@ class FortiOS_vm(vrnetlab.VM):
         ifup_script = ifup_script.replace("{MGMT_IP_PREFIXLEN}", mgmt_ip_v4_prefixlen)
         ifup_script = ifup_script.replace("{MGMT_IP_ADDRESS}", mgmt_ip_v4_address)
         self.logger.info(f"TFTP Traffic towards {self.mgmt_gw_ipv4} redirected towards fakehost mac: "
-                    f"{TFTP_FAKEHOST_VETH_MAC_ADDR} and return traffic directed to MAC: {self.mgmt_mac}")
+                         f"{TFTP_FAKEHOST_VETH_MAC_ADDR} and return traffic directed to MAC: {self.mgmt_mac}")
 
         with open("/etc/tc-tap-mgmt-ifup", "w") as f:
             f.write(ifup_script)
