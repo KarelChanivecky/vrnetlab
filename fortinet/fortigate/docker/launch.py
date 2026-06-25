@@ -49,11 +49,12 @@ class FOSCliState(IntEnum):
     UNKNOWN = auto()  # Non-patterns from here on.
     TN_TIMEOUT = auto()
 
-DEFAULT_HOSTNAME_PROMPT = rb"(?m)^\s*[A-Za-z0-9_.-]+(?:-VM64)?-KVM(?:\s+\((?:STS|Interim)\))?\s*[#$]\s*"
 
+DEFAULT_HOSTNAME_REGEX = rb"[A-Za-z0-9_.-]+(?:-VM64)?-KVM(?:-[A-Za-z0-9]*)?"
+DEFAULT_HOSTNAME_PROMPT = rb"(?m)^\s*" + DEFAULT_HOSTNAME_REGEX + rb"(?:\s+\((?:STS|Interim)\))?\s*[#$]\s*"
 FOS_CLI_STATE_PATTERNS = [None] * FOSCliState.UNKNOWN.value
 FOS_CLI_STATE_PATTERNS[FOSCliState.PROVIDE_USERNAME.value] = (
-    rb"\n[A-Za-z0-9_.-]+(?:-VM64)?-KVM"
+    rb"\n" + DEFAULT_HOSTNAME_REGEX +
     rb"(?:\((?:Primary|Secondary)\))?"
     rb"\s+login:\s*"
 )
