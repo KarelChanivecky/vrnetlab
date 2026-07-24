@@ -9,6 +9,14 @@ from fos_state import FOSCliState, OLD_LIC_HOSTNAME_REGEX, DEFAULT_HOSTNAME_REGE
 
 STARTUP_CONFIG_FILE = "/config/startup-config.cfg"
 LIC_FILE = "appliance.lic"
+CURRENT_PASSWORD_PATTERN = rb"(?mi)^(?:Please enter current administrator password|Current Password):?\s*$"
+LICENSE_STATUS_PATTERN = rb"(?mi)^License(?: Status)?:\s*(.+?)\s*\r?$"
+LICENSE_STATUS_PENDING = "pending"
+LICENSE_STATUS_TIMEOUT_SECONDS = int(os.getenv("FOS_LICENSE_STATUS_TIMEOUT_SECONDS", "90"))
+LICENSE_STATUS_POLL_INTERVAL_SECONDS = 2
+ADMIN_SESSIONS_REMOVED_PATTERN = (
+    rb"(?m)^\*ATTENTION\*: Admin sessions removed because license registration status changed.*\r?$"
+)
 
 
 class FOSCommander:
@@ -31,8 +39,13 @@ class FOSCommander:
         self._terminal = terminal
         self._start_time = datetime.datetime.now()
         self._cmd_queue = deque()
-
+        self._disks_formatted = 0
+        # The first additional disk is always automatically formatted.
+        self._disks_to_format = max(0, len(os.getenv("FOS_DISK_SPECS", "").split(",")) - 1)
+        if self._disks_to_format > self._disks_formatted:
+            self._cmd_queue.appendleft(self._format_next_disk)
         self._cmd_queue.append(self._configure_sys_if)
+        self._cmd_queue.append(self._setup_default_dns)
         self.check_license_exists()
         self._cmd_queue.append(self._update_hostname)
         self._cmd_queue.append(self._apply_startup_config)
@@ -47,6 +60,48 @@ class FOSCommander:
 
     def logout(self):
         self._cmd_queue.appendleft(lambda: self._terminal.wait_write("exit", wait=None))
+
+    def _format_next_disk(self):
+        if self._disks_to_format == self._disks_formatted:
+            self._logger.info("Done formatting disks.")
+            return
+
+        disk_number = self._disks_formatted + 2
+        self._logger.info(f"Formatting disk #{disk_number}")
+        self._terminal.wait_write("exe disk list", wait=None)
+        disk_list_output, complete = self._read_until_pattern(
+            self._state_patterns[FOSCliState.CMD_PROMPT.value],
+            time.monotonic() + 10,
+        )
+        # We took the cmd prompt from the buffer, this regenerates it so the FOSCliDriver can detect it.
+        self._terminal.wait_write("", wait=None)
+        if not complete:
+            self._logger.error("Timed out waiting for disk list output.")
+            self._terminal.stop()
+            raise RuntimeError("Timed out waiting for disk list output.")
+
+        disk_ref = self._disk_ref_from_list(disk_list_output, disk_number)
+        self._terminal.wait_write(f"exe disk format {disk_ref}", wait=None)
+        self._terminal.wait_write(f"y", wait="continue")
+        self._disks_formatted += 1
+        if self._disks_to_format > self._disks_formatted:
+            self._cmd_queue.appendleft(self._format_next_disk)
+        self._waiting_for_state.clear()
+        self._waiting_for_state.extend([FOSCliState.REBOOTING])
+
+    def _disk_ref_from_list(self, disk_list_output, disk_number):
+        disk_name = f"Virtual-Disk{disk_number}".encode()
+        disk_line_match = re.search(
+            rb"(?m)^Disk\s+" + re.escape(disk_name) + rb"\s+ref:\s+(\d+)\b.*$",
+            disk_list_output,
+        )
+        if not disk_line_match:
+            self._logger.error(
+                f"Could not find {disk_name.decode()} in disk list output: {disk_list_output.decode(errors='replace')}"
+            )
+            self._terminal.stop()
+            raise RuntimeError(f"Could not find {disk_name.decode()} in disk list output.")
+        return disk_line_match.group(1).decode()
 
     def _setup_default_dns(self):
         self._terminal.wait_write("config system dns\r"
@@ -100,9 +155,10 @@ class FOSCommander:
                                       "ed 9999\r"
                                       f"set gateway {self._mgmt_gw_ipv6}\r"
                                       "set device port1\r"
-                                      "set vrf 1\r"
+                                      "next\r"
                                       "end",
                                       wait=None)
+        self._terminal.wait_write("", wait="end")
 
     def _update_now(self):
         self._terminal.wait_write("exe update-now", wait=None)

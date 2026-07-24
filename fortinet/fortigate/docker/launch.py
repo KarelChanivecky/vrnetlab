@@ -89,12 +89,30 @@ class FortiOS_vm(vrnetlab.VM):
             ["qemu-img", "create", "-f", "qcow2", "empty.qcow2", "30G"]
         )
 
-        self.qemu_args.extend(
-            [
-                "-drive",
-                "if=virtio,format=qcow2,file=empty.qcow2,index=1",
-            ]
-        )
+        # Comma-separated list of disk sizes to install in the machine. as accepted by qemu-img create.
+        disk_specs = os.getenv("FOS_DISK_SPECS", "").split(",")
+        index = 1
+        if disk_specs[0] == '':
+            self.logger.warn(
+                "No additional disks configured. Use FOS_DISK_SPECS to specify a comma-separated list of disk sizes")
+            return
+        index = 0
+        for spec in disk_specs:
+            index += 1
+            # set up the extra empty disk image
+            # for fortigate logs
+            vrnetlab.run_command(
+                ["qemu-img", "create", "-f", "qcow2", f"empty{index}.qcow2", spec]
+            )
+
+            self.qemu_args.extend(
+                [
+                    "-drive",
+                    f"if=virtio,format=qcow2,file=empty{index}.qcow2,index={index}",
+                ]
+            )
+
+            index += 1
 
     def bootstrap_spin(self):
         """This function should be called periodically to do work.
@@ -109,6 +127,7 @@ class FortiOS_vm(vrnetlab.VM):
     def stop(self):
         self.stopped = True
         super().stop()
+
 
 class FortiOS(vrnetlab.VR):
     def __init__(self, hostname, username, password, conn_mode, mgmt_net: NetMgmtStrategy):
