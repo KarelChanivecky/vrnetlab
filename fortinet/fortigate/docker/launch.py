@@ -68,7 +68,7 @@ class FortiOS_vm(vrnetlab.VM):
         self.highest_port = 0
         self.qemu_args.extend(["-uuid", os.getenv("FORTIGATE_UUID") or str(uuid.uuid4())])
         self.spins = 0
-        self.running = None
+        self.stopped = False
         self.waiting_for = False
         self._mgmt_net = mgmt_net
         self._mgmt_net.configure_vm_mgmt(self)
