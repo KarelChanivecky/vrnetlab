@@ -1,4 +1,5 @@
 import os
+import time
 
 import vrnetlab
 from fos_commander import FOSCommander
@@ -13,6 +14,7 @@ class FOSCliDriver:
     def __init__(self, terminal: vrnetlab.VM, mgmt_passthrough, username, password, logger, mgmt_address_ipv4,
                  mgmt_gw_ipv4, mgmt_address_ipv6, mgmt_gw_ipv6, hostname) -> None:
         super().__init__()
+        self._idle_spins = 0
         self._logger = logger
         self._password = password
         self._username = username
@@ -54,28 +56,37 @@ class FOSCliDriver:
         self._cred_rejected = False
 
     def process_state(self):
-        cur_state = self._next_state()
+        spin_start = time.time()
+        # Running signals health state. Stopped signals we stopped before reaching healthy state
+        while not self._terminal.stopped and not self._terminal.running and time.time() < spin_start + 5:
+            if self._idle_spins > 300:
+                # too many spins without appropriate communication
+                self._logger.warning("no output from serial console, restarting VCP")
+                self._terminal.stop()
+                self._idle_spins = 0
+                raise RuntimeError("VM node malfunction")
+            cur_state = self._next_state()
 
-        # The FSM is actually moving along
-        if cur_state.value < FOSCliState.UNKNOWN.value:
-            self.spins = 0
-            self._last_known_state = cur_state
+            # The FSM is actually moving along
+            if cur_state.value < FOSCliState.UNKNOWN.value:
+                self._idle_spins = 0
+                self._last_known_state = cur_state
 
-        # Continue to show current state while reducing verbosity
-        if cur_state != FOSCliState.UNKNOWN and cur_state != FOSCliState.TN_TIMEOUT:
-            self._logger.debug(f"ST: {cur_state.name}")
+            # Continue to show current state while reducing verbosity
+            if cur_state != FOSCliState.UNKNOWN and cur_state != FOSCliState.TN_TIMEOUT:
+                self._logger.debug(f"ST: {cur_state.name}")
 
-        if len(self.tn_out) > 0:
-            log_out = self.tn_out
-            if not self._log_bin:
-                log_out = log_out.decode()
-            self._logger.debug(f"OUT: {log_out}")
+            if len(self.tn_out) > 0:
+                log_out = self.tn_out
+                if not self._log_bin:
+                    log_out = log_out.decode()
+                self._logger.debug(f"OUT: {log_out}")
 
-        if self._waiting_for and cur_state not in self._waiting_for:
-            return
+            if self._waiting_for and cur_state not in self._waiting_for:
+                return
 
-        self._waiting_for.clear()
-        self._state_handlers[cur_state]()
+            self._waiting_for.clear()
+            self._state_handlers[cur_state]()
 
     def _next_state(self):
         (ridx, match, res) = self._terminal.tn.expect(self._state_patterns, 1)
@@ -126,7 +137,6 @@ class FOSCliDriver:
             additional_info = "Min password policy not met. Check the logs for the password policy"
         self._logger.error(f"Credential rejected. {additional_info}")
 
-        self.running = False
         self._terminal.stop()
         raise RuntimeError("Credential rejected")
 
@@ -139,13 +149,13 @@ class FOSCliDriver:
         # no match, if we saw some output from the router it's probably
         # booting, so let's give it some more time
         if self._last_known_state == FOSCliState.REBOOTING:
-            self.spins += 1
+            self._idle_spins += 1
             # It could be that the FGT image was defective. In this case it has been observed that
             # the FGT would endlessly reboot.
         else:
-            self.spins = 0
+            self._idle_spins = 0
 
     def _tn_timeout(self):
         if self._last_known_state == FOSCliState.CMD_PROMPT:
             self._cmd_prompt()
-        self.spins += 1
+        self._idle_spins += 1

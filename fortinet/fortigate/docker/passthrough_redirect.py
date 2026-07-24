@@ -163,6 +163,15 @@ class PassthroughRedirect(NetMgmtStrategy):
                 action pedit ex munge eth dst set {PRIV_NS_VETH_MAC_ADDR} pipe \
                 action mirred egress redirect dev {RA}
 
+            """
+                            .replace("{PROTO}", proto)
+                            .replace("{PORT}", port)
+                            .replace("{PRIO}", str(prio)))
+            prio += 1
+
+        for entry in self._target_port_ranges:
+            proto, port = entry.split(":")
+            ifup_script += ("""
             # Redirect traffic from private NS to VM
             tc filter add dev {RA} ingress protocol ip prio {PRIO} \
                 flower ip_proto {PROTO} src_port {PORT} dst_ip {SRC_ADDR} 	\
@@ -173,6 +182,7 @@ class PassthroughRedirect(NetMgmtStrategy):
                             .replace("{PROTO}", proto)
                             .replace("{PORT}", port)
                             .replace("{PRIO}", str(prio)))
+            prio += 1
 
         # FA, RA, TEMP_REDIR_DST
         ifup_script = ifup_script.replace("{RA}", self._veth_root_ns_link_name)
