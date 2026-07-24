@@ -67,7 +67,7 @@ class FortiOS_vm(vrnetlab.VM):
         self.nic_type = "virtio-net-pci"
         self.highest_port = 0
         self.spins = 0
-        self.running = None
+        self.stopped = False
         self.waiting_for = False
         self._mgmt_net = mgmt_net
         self._mgmt_net.configure_vm_mgmt(self)
