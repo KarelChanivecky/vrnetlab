@@ -58,7 +58,7 @@ class FOSCliDriver:
     def process_state(self):
         spin_start = time.time()
         # Running signals health state. Stopped signals we stopped before reaching healthy state
-        while not self._terminal.stopped and not self._terminal.running and time.time() < spin_start + 5:
+        while not self._terminal.stopped and time.time() < spin_start + 5:
             if self._idle_spins > 300:
                 # too many spins without appropriate communication
                 self._logger.warning("no output from serial console, restarting VCP")
@@ -87,6 +87,8 @@ class FOSCliDriver:
 
             self._waiting_for.clear()
             self._state_handlers[cur_state]()
+            if self._terminal.running:
+                return  # If reached running state, then we allow vrnetlab.VM to be more responsive to system state
 
     def _next_state(self):
         (ridx, match, res) = self._terminal.tn.expect(self._state_patterns, 1)
