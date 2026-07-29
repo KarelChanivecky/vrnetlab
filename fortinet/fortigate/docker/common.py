@@ -33,3 +33,45 @@ FOS_CLI_STATE_PATTERNS[FOSCliState.LIC_FAIL.value] = rb"(?m)^VM license install 
 FOS_CLI_STATE_PATTERNS[FOSCliState.CMD_PROMPT.value] = DEFAULT_HOSTNAME_PROMPT
 FOS_CLI_STATE_PATTERNS[FOSCliState.SHUTTING_DOWN.value] = b"system is going down"
 FOS_CLI_STATE_PATTERNS[FOSCliState.REBOOTING.value] = b"stand by while rebooting"
+
+DEF_POLICY_COMPLIANT_PASSWORD = "FortinetFOS1!"
+DEFAULT_USERNAME = "admin"
+DEFAULT_PASSWORD = DEFAULT_USERNAME
+
+
+class Credentials:
+    def __init__(self, username, password) -> None:
+        super().__init__()
+        self.username = username
+        self.password = password
+
+
+class LineBuffer:
+    def __init__(self, lines=2, max_buffer=1024) -> None:
+        super().__init__()
+        if lines < 1:
+            raise ValueError("lines must be at least 1")
+        self._lines = lines
+        self._max_buffer = max_buffer
+        self._data = b""
+
+    @property
+    def data(self):
+        return self._data
+
+    def put(self, data):
+        if not data:
+            return
+        self._data += data
+        newline_indexes = [idx for idx, byte in enumerate(self._data) if byte == ord("\n")]
+        keep_from_index = -1
+        if self._data.endswith(b"\n") and len(newline_indexes) > self._lines:
+            keep_from_index = newline_indexes[-(self._lines + 1)]
+        elif not self._data.endswith(b"\n") and len(newline_indexes) >= self._lines:
+            keep_from_index = newline_indexes[-self._lines]
+        if keep_from_index >= 0:
+            self._data = self._data[keep_from_index:]
+        self._data = self._data[-self._max_buffer:]
+
+    def clear(self):
+        self._data = b""
