@@ -61,6 +61,8 @@ class FortiOS_vm(vrnetlab.VM):
             provision_pci_bus=False,
             mgmt_passthrough=mgmt_net.mgmt_passthrough
         )
+
+        self.logger.info(f"Launching. commandline: {' '.join(sys.argv)}")
         self.conn_mode = conn_mode
         self.hostname = hostname
         self.num_nics = 12
@@ -145,8 +147,8 @@ if __name__ == "__main__":
         "--trace", action="store_true", help="enable trace level logging"
     )
     parser.add_argument("--hostname", default="vr-fortinet", help="Fortinet hostname")
-    parser.add_argument("--username", default="admin", help="Username")
-    parser.add_argument("--password", default="admin", help="Password")
+    parser.add_argument("--username", default=None, help="Username")
+    parser.add_argument("--password", default=None, help="Password", nargs="?")
     parser.add_argument(
         "--connection-mode",
         default="tc",
