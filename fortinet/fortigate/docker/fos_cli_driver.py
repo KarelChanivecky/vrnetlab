@@ -1,9 +1,11 @@
 import os
+import re
 import time
 
 import vrnetlab
+from common import FOSCliState, FOS_CLI_STATE_PATTERNS, Credentials, DEFAULT_USERNAME, DEF_POLICY_COMPLIANT_PASSWORD, \
+    DEFAULT_PASSWORD, LineBuffer
 from fos_commander import FOSCommander
-from fos_state import FOSCliState, FOS_CLI_STATE_PATTERNS
 
 
 class FOSCliDriver:
@@ -16,8 +18,12 @@ class FOSCliDriver:
         super().__init__()
         self._idle_spins = 0
         self._logger = logger
-        self._password = password
-        self._username = username
+        pwd = password
+        if pwd is None:  # emtpy string is falsy, so the or trick doesn't work.
+            pwd = DEFAULT_PASSWORD
+        self._desired_credentials = Credentials(username or DEFAULT_USERNAME, pwd)
+        self._credentials = Credentials(DEFAULT_USERNAME, DEF_POLICY_COMPLIANT_PASSWORD)
+        self._username = DEFAULT_USERNAME
         self._terminal = terminal
         self._mgmt_passthrough = mgmt_passthrough
         self._log_bin = os.getenv("FOS_LOG_BIN", "false").lower() == "true"
@@ -36,6 +42,7 @@ class FOSCliDriver:
         }
 
         self._state_patterns = FOS_CLI_STATE_PATTERNS.copy()
+        self._line_buffer = LineBuffer()
         self.tn_out = b""
         self._last_known_state = FOSCliState.UNKNOWN
         self._waiting_for = []
@@ -49,7 +56,9 @@ class FOSCliDriver:
             mgmt_passthrough=mgmt_passthrough,
             hostname=hostname,
             state_patterns=self._state_patterns,
-            waiting_for_state=self._waiting_for
+            waiting_for_state=self._waiting_for,
+            credentials=self._credentials,
+            desired_credentials=self._desired_credentials,
         )
 
         self._tried_v7_default_password = False
@@ -91,28 +100,40 @@ class FOSCliDriver:
                 return  # If reached running state, then we allow vrnetlab.VM to be more responsive to system state
 
     def _next_state(self):
-        (ridx, match, res) = self._terminal.tn.expect(self._state_patterns, 1)
+        (_, _, res) = self._terminal.tn.expect(self._state_patterns, 1)
+        self._line_buffer.put(res)
+
+        ridx, match = self._match_buffered_state()
         self.tn_out = res
-        if not match:
-            if res == b"":
-                return FOSCliState.TN_TIMEOUT
-            return FOSCliState.UNKNOWN
-        return FOSCliState(ridx)
+        if match:
+            self.tn_out = self._line_buffer.data[:match.end()]
+            self._line_buffer.clear()
+            return FOSCliState(ridx)
+        if res == b"":
+            return FOSCliState.TN_TIMEOUT
+        return FOSCliState.UNKNOWN
+
+    def _match_buffered_state(self):
+        for ridx, pattern in enumerate(self._state_patterns):
+            match = re.search(pattern, self._line_buffer.data)
+            if match:
+                return ridx, match
+        return -1, None
 
     def _provide_username(self):
-        self._terminal.wait_write(self._username, wait=None)
+        self._terminal.wait_write(self._credentials.username, wait=None)
 
     def _provide_password(self):
         if self._cred_rejected:
             self._tried_v7_default_password = True
             self._terminal.wait_write("", wait=None)
             return
-        self._terminal.wait_write(self._password, wait=None)
+        self._terminal.wait_write(self._credentials.password, wait=None)
 
     def _change_password(self):
-        self._terminal.wait_write(self._password, wait=None)
-        self._terminal.wait_write(self._password, wait="Confirm Password")
-        self._password_changed = True
+        # At this time, this would be the default password.
+        self._terminal.wait_write(self._credentials.password, wait=None)
+        self._terminal.wait_write(self._credentials.password, wait="Confirm Password")
         # FOS 7.4 needs log out before you can use the password with ssh
         self._commander.logout()
 

@@ -5,7 +5,7 @@ import time
 from collections import deque
 
 import vrnetlab
-from fos_state import FOSCliState, OLD_LIC_HOSTNAME_REGEX, DEFAULT_HOSTNAME_REGEX
+from common import FOSCliState, OLD_LIC_HOSTNAME_REGEX, DEFAULT_HOSTNAME_REGEX, Credentials, LineBuffer
 
 STARTUP_CONFIG_FILE = "/config/startup-config.cfg"
 LIC_FILE = "appliance.lic"
@@ -25,8 +25,11 @@ class FOSCommander:
     """
 
     def __init__(self, terminal: vrnetlab.VM, logger, mgmt_address_ipv4, mgmt_gw_ipv4, mgmt_address_ipv6, mgmt_gw_ipv6,
-                 mgmt_passthrough, hostname, waiting_for_state, state_patterns) -> None:
+                 mgmt_passthrough, hostname, waiting_for_state, state_patterns, credentials: Credentials,
+                 desired_credentials: Credentials) -> None:
         super().__init__()
+        self._desired_credentials = desired_credentials
+        self._credentials = credentials
         self._state_patterns = state_patterns
         self._waiting_for_state: list = waiting_for_state
         self._hostname = hostname
@@ -37,6 +40,7 @@ class FOSCommander:
         self._mgmt_address_ipv4 = mgmt_address_ipv4
         self._logger = logger
         self._terminal = terminal
+        self._admin_password_buffer = LineBuffer()
         self._start_time = datetime.datetime.now()
         self._cmd_queue = deque()
         self._disks_formatted = 0
@@ -49,6 +53,7 @@ class FOSCommander:
         self._cmd_queue.append(self._setup_default_dns)
         self.check_license_exists()
         self._cmd_queue.append(self._update_hostname)
+        self._cmd_queue.append(self._add_admin)
         self._cmd_queue.append(self._apply_startup_config)
         self._cmd_queue.append(lambda: self._toggle_paging(True))
 
@@ -432,6 +437,95 @@ class FOSCommander:
             self._cmd_queue.append(self._setup_license)
         except FileNotFoundError:
             pass
+
+    def _add_admin(self):
+        username = self._desired_credentials.username
+        password = self._desired_credentials.password
+        self._logger.info(f"Configuring admin '{username}'")
+
+        self._terminal.wait_write("config system password-policy\r"
+                                  "set status disable\r"
+                                  "end",
+                                  wait=None)
+
+        self._terminal.wait_write("config system admin", wait=None)
+        self._terminal.wait_write(f"edit {username}", wait=None)
+        self._terminal.wait_write("set accprofile super_admin", wait=None)
+        if len(password) > 0:
+            self._terminal.wait_write(f"set password {password}", wait="super_admin")
+            session_state = self._enter_current_password_if_asked()
+            if self._resume_after_admin_session_loss(session_state):
+                return
+        elif username == "admin":
+            self._terminal.wait_write(f"unset password", wait="super_admin")
+            session_state = self._enter_current_password_if_asked()
+            if self._resume_after_admin_session_loss(session_state):
+                return
+
+        self._terminal.wait_write("next", wait=None)
+        session_state = self._enter_current_password_if_asked()
+        if self._resume_after_admin_session_loss(session_state):
+            return
+
+        # end returns to the top-level prompt; leave it in the buffer so the FSM
+        # picks it up as CMD_PROMPT on the next spin.
+        self._terminal.wait_write("end", wait=None)
+
+        # From now on the active admin is the one we just configured.
+        self._activate_desired_credentials()
+
+    def _activate_desired_credentials(self):
+        self._credentials.username = self._desired_credentials.username
+        self._credentials.password = self._desired_credentials.password
+
+    def _resume_after_admin_session_loss(self, session_state):
+        if session_state not in ("session_lost", "login_prompt_seen", "password_prompt_seen"):
+            return False
+
+        self._activate_desired_credentials()
+        self._waiting_for_state.clear()
+        if session_state == "login_prompt_seen":
+            self._terminal.wait_write(self._credentials.username, wait=None)
+            self._waiting_for_state.extend([FOSCliState.PROVIDE_PASSWORD])
+        elif session_state == "password_prompt_seen":
+            self._terminal.wait_write(self._credentials.password, wait=None)
+            self._waiting_for_state.extend([FOSCliState.CMD_PROMPT])
+        else:
+            self._waiting_for_state.extend([FOSCliState.PROVIDE_USERNAME])
+        return True
+
+    def _enter_current_password_if_asked(self):
+        patterns = [
+            CURRENT_PASSWORD_PATTERN,
+            ADMIN_SESSIONS_REMOVED_PATTERN,
+            self._state_patterns[FOSCliState.PROVIDE_USERNAME.value],
+            self._state_patterns[FOSCliState.PROVIDE_PASSWORD.value],
+        ]
+        (ridx, _, res) = self._expect(patterns, 2)
+        self._admin_password_buffer.put(res)
+        if ridx in (1, 2, 3) or re.search(ADMIN_SESSIONS_REMOVED_PATTERN, self._admin_password_buffer.data):
+            self._logger.info("Admin configuration dropped the session; waiting for login.")
+            login_seen = re.search(
+                self._state_patterns[FOSCliState.PROVIDE_USERNAME.value],
+                self._admin_password_buffer.data,
+            )
+            password_seen = re.search(
+                self._state_patterns[FOSCliState.PROVIDE_PASSWORD.value],
+                self._admin_password_buffer.data,
+            )
+            self._admin_password_buffer.clear()
+            if login_seen:
+                return "login_prompt_seen"
+            if password_seen:
+                return "password_prompt_seen"
+            return "session_lost"
+        match = re.search(CURRENT_PASSWORD_PATTERN, self._admin_password_buffer.data)
+        if match:
+            self._admin_password_buffer.clear()
+            # We are still authenticated with the current credentials at this point.
+            self._terminal.wait_write(self._credentials.password, wait=None)
+            return "password_entered"
+        return None
 
     def _ready(self):
         self._terminal.running = True
