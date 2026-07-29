@@ -42,6 +42,7 @@ class FOSCommander:
         self._disks_formatted = 0
         # The first additional disk is always automatically formatted.
         self._disks_to_format = max(0, len(os.getenv("FOS_DISK_SPECS", "").split(",")) - 1)
+        self._cmd_queue.append(lambda: self._toggle_paging(False))
         if self._disks_to_format > self._disks_formatted:
             self._cmd_queue.appendleft(self._format_next_disk)
         self._cmd_queue.append(self._configure_sys_if)
@@ -49,6 +50,7 @@ class FOSCommander:
         self.check_license_exists()
         self._cmd_queue.append(self._update_hostname)
         self._cmd_queue.append(self._apply_startup_config)
+        self._cmd_queue.append(lambda: self._toggle_paging(True))
 
     def run_cmd(self):
         try:
@@ -107,6 +109,13 @@ class FOSCommander:
         self._terminal.wait_write("config system dns\r"
                                   "set primary 1.1.1.1\r"
                                   "set secondary 8.8.8.8\r"
+                                  "end",
+                                  wait=None)
+
+    def _toggle_paging(self, enabled):
+        output_mode = "more" if enabled else "standard"
+        self._terminal.wait_write("config system console\r"
+                                  f"set output {output_mode}\r"
                                   "end",
                                   wait=None)
 
