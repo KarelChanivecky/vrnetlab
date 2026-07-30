@@ -1,6 +1,8 @@
 import datetime
+import difflib
 import os
 import re
+import select
 import time
 from collections import deque
 
@@ -8,15 +10,41 @@ import vrnetlab
 from common import FOSCliState, OLD_LIC_HOSTNAME_REGEX, DEFAULT_HOSTNAME_REGEX, Credentials, LineBuffer
 
 STARTUP_CONFIG_FILE = "/config/startup-config.cfg"
+INIT_CONFIG_FILE = "/tmp/initial.conf"
+CURRENT_CONFIG_FILE = "/config/current.conf"
+CURRENT_RAW_FILE = "/tmp/current.raw"
+CURRENT_CLEAN_FILE = "/tmp/current.clean"
 LIC_FILE = "appliance.lic"
+CONFIG_CAPTURE_TIMEOUT = 60
 CURRENT_PASSWORD_PATTERN = rb"(?mi)^(?:Please enter current administrator password|Current Password):?\s*$"
 LICENSE_STATUS_PATTERN = rb"(?mi)^License(?: Status)?:\s*(.+?)\s*\r?$"
 LICENSE_STATUS_PENDING = "pending"
-LICENSE_STATUS_TIMEOUT_SECONDS = int(os.getenv("FOS_LICENSE_STATUS_TIMEOUT_SECONDS", "90"))
+FOS_LICENSE_STATUS_TIMEOUT_SECONDS = 90
 LICENSE_STATUS_POLL_INTERVAL_SECONDS = 2
 ADMIN_SESSIONS_REMOVED_PATTERN = (
     rb"(?m)^\*ATTENTION\*: Admin sessions removed because license registration status changed.*\r?$"
 )
+
+
+class TelnetCaptureSession:
+    def __init__(self, tn):
+        self._tn = tn
+
+    def read_available(self, timeout):
+        data = self._tn.read_very_eager()
+        if data:
+            return data
+
+        readable, _, _ = select.select([self._tn.get_socket()], [], [], timeout)
+        if not readable:
+            return b""
+        return self._tn.read_very_eager()
+
+    def write(self, data):
+        self._tn.write(data)
+
+    def close(self):
+        pass
 
 
 class FOSCommander:
@@ -54,8 +82,8 @@ class FOSCommander:
         self.check_license_exists()
         self._cmd_queue.append(self._update_hostname)
         self._cmd_queue.append(self._add_admin)
+        self._cmd_queue.append(self._capture_blank_config)
         self._cmd_queue.append(self._apply_startup_config)
-        self._cmd_queue.append(lambda: self._toggle_paging(True))
 
     def run_cmd(self):
         try:
@@ -67,6 +95,21 @@ class FOSCommander:
 
     def logout(self):
         self._cmd_queue.appendleft(lambda: self._terminal.wait_write("exit", wait=None))
+
+    def save_config(self):
+        restore_paging = False
+        try:
+            self._wait_for_prompt_sync("Timed out waiting for command prompt before config capture.")
+            restore_paging = self._console_paging_enabled()
+            if restore_paging:
+                self._toggle_paging(False)
+            self._save_config()
+        finally:
+            try:
+                if restore_paging:
+                    self._toggle_paging(True)
+            finally:
+                self._terminal.tn.close()
 
     def _format_next_disk(self):
         if self._disks_to_format == self._disks_formatted:
@@ -119,10 +162,32 @@ class FOSCommander:
 
     def _toggle_paging(self, enabled):
         output_mode = "more" if enabled else "standard"
-        self._terminal.wait_write("config system console\r"
-                                  f"set output {output_mode}\r"
-                                  "end",
-                                  wait=None)
+        command = "config system console\r" f"set output {output_mode}\r" "end"
+        self._terminal.tn.write((command + "\r").encode())
+
+    def _console_paging_enabled(self):
+        self._terminal.tn.write(b"show full-configuration system console\r")
+        output, complete = self._read_until_pattern(
+            self._state_patterns[FOSCliState.CMD_PROMPT.value],
+            time.monotonic() + 10,
+        )
+        if not complete:
+            self._terminal.stop()
+            raise RuntimeError("Timed out reading console output mode.")
+        match = re.search(rb"(?m)^\s*set output (more|standard)\s*\r?$", output)
+        if not match:
+            self._logger.warn("Could not determine console output mode; not restoring pagination after capture.")
+            return False
+        return match.group(1) == b"more"
+
+    def _wait_for_prompt_sync(self, timeout_message):
+        _output, complete = self._read_until_pattern(
+            self._state_patterns[FOSCliState.CMD_PROMPT.value],
+            time.monotonic() + 10,
+        )
+        if not complete:
+            self._terminal.stop()
+            raise RuntimeError(timeout_message)
 
     def _unset_default_dns(self):
         self._terminal.wait_write("config system dns\r"
@@ -191,7 +256,7 @@ class FOSCommander:
         self._logger.info("License status changed")
 
     def _wait_for_license_status_ready(self):
-        deadline = time.monotonic() + LICENSE_STATUS_TIMEOUT_SECONDS
+        deadline = time.monotonic() + FOS_LICENSE_STATUS_TIMEOUT_SECONDS
         last_status = None
 
         while time.monotonic() < deadline:
@@ -430,6 +495,121 @@ class FOSCommander:
 
         if len(config_stack) > 0:
             raise ValueError("Startup config malformed. Unmatched config or edit brackets.")
+
+    def capture_config(self):
+        self._logger.info("Capturing FortiOS config with telnet plain show")
+        session = TelnetCaptureSession(self._terminal.tn)
+        return self._capture_config_from_session(session)
+
+    def _capture_blank_config(self):
+        config = self.capture_config()
+        self._write_config_file(INIT_CONFIG_FILE, config)
+
+    def _save_config(self):
+        blank_config = self._read_config_file(INIT_CONFIG_FILE)
+        current_config = self.capture_config()
+        self._write_config_file(CURRENT_CLEAN_FILE, current_config)
+        changed_config = self._current_side_config_delta(blank_config, current_config)
+        self._write_config_file(CURRENT_CONFIG_FILE, changed_config)
+        self._logger.debug("Current config written")
+
+    def _current_side_config_delta(self, blank_config, current_config):
+        blank_lines = self._normalize_config_for_diff(blank_config)
+        current_entries = self._config_diff_entries(current_config)
+        current_lines = [normalized for normalized, _original in current_entries]
+        matcher = difflib.SequenceMatcher(a=blank_lines, b=current_lines, autojunk=False)
+        changed_lines = []
+
+        for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+            if tag in ("insert", "replace"):
+                changed_lines.extend(original for _normalized, original in current_entries[j1:j2])
+
+        if not self._has_non_structural_config_line(changed_lines):
+            return ""
+        return "\n".join(changed_lines)
+
+    def _config_diff_entries(self, config):
+        entries = []
+        for line in config.splitlines():
+            normalized = self._normalize_config_line(line)
+            if normalized and not self._is_volatile_config_line(normalized):
+                entries.append((normalized, line.rstrip()))
+        return entries
+
+    def _normalize_config_for_diff(self, config):
+        lines = []
+        for line in config.splitlines():
+            normalized = self._normalize_config_line(line)
+            if normalized and not self._is_volatile_config_line(normalized):
+                lines.append(normalized)
+        return lines
+
+    def _normalize_config_line(self, line):
+        return re.sub(r"[ \t]+", " ", line).strip()
+
+    def _is_volatile_config_line(self, line):
+        return line.startswith("#conf_file_ver=") or line.startswith("conf_file_ver=")
+
+    def _has_non_structural_config_line(self, lines):
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped in ("next", "end"):
+                continue
+            if stripped.startswith("config ") or stripped.startswith("edit "):
+                continue
+            return True
+        return False
+
+    def _clean_show_output(self, output):
+        config = output.replace("\r\n", "\n")
+        config = config.replace("\r", "\n")
+        config = config.replace("^H", "")
+        config = re.sub(r"\x08+", "", config)
+        config = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", config)
+        lines = config.splitlines()
+        if lines and lines[0].strip() == "show":
+            lines = lines[1:]
+        return "\n".join(lines).strip()
+
+    def _capture_config_from_session(self, session):
+        prompt_pattern = self._state_patterns[FOSCliState.CMD_PROMPT.value]
+        try:
+            session.write(b"show\r")
+            output = self._read_show_output(session, prompt_pattern)
+            self._write_config_file(CURRENT_RAW_FILE, output.decode(errors="replace"))
+            return self._clean_show_output(output.decode(errors="replace"))
+        finally:
+            session.close()
+
+    def _read_show_output(self, session, prompt_pattern):
+        output = b""
+        deadline = time.monotonic() + CONFIG_CAPTURE_TIMEOUT
+
+        while True:
+            if time.monotonic() > deadline:
+                self._terminal.stop()
+                raise RuntimeError("Timed out waiting for config capture output.")
+
+            chunk = session.read_available(1)
+            if not chunk:
+                continue
+
+            output += chunk
+            if re.search(prompt_pattern, output):
+                return re.sub(prompt_pattern + rb"\s*$", b"", output)
+
+    def _read_config_file(self, path):
+        with open(path) as config_file:
+            return config_file.read()
+
+    def _write_config_file(self, path, content):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as config_file:
+            config_file.write(content)
+            if content and not content.endswith("\n"):
+                config_file.write("\n")
 
     def check_license_exists(self):
         try:
