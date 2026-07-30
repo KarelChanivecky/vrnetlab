@@ -26,7 +26,7 @@ class FOSCliDriver:
         self._username = DEFAULT_USERNAME
         self._terminal = terminal
         self._mgmt_passthrough = mgmt_passthrough
-        self._log_bin = os.getenv("FOS_LOG_BIN", "false").lower() == "true"
+        self._log_encoded = os.getenv("FOS_LOG_ENCODED", "false").lower() == "true"
         self._state_handlers = {
             FOSCliState.PROVIDE_USERNAME: self._provide_username,
             FOSCliState.PROVIDE_PASSWORD: self._provide_password,
@@ -87,7 +87,7 @@ class FOSCliDriver:
 
             if len(self.tn_out) > 0:
                 log_out = self.tn_out
-                if not self._log_bin:
+                if not self._log_encoded:
                     log_out = log_out.decode()
                 self._logger.debug(f"OUT: {log_out}")
 
@@ -136,6 +136,14 @@ class FOSCliDriver:
         self._terminal.wait_write(self._credentials.password, wait="Confirm Password")
         # FOS 7.4 needs log out before you can use the password with ssh
         self._commander.logout()
+
+    def save_config(self):
+        self._commander.save_config()
+        self._reactivate()
+
+    def _reactivate(self):
+        self._last_known_state = FOSCliState.UNKNOWN
+        self._line_buffer.clear()
 
     def _credential_accepted(self):
         self._cred_rejected = False
