@@ -4,6 +4,7 @@ import os
 import re
 import signal
 import sys
+import telnetlib
 import uuid
 
 import vrnetlab
@@ -41,6 +42,7 @@ MGMT_PASSTHROUGH_DEFAULT = True
 TFTP_PORT = 69
 TFTP_TID_RANGE = (52400, 52500)
 TFTP_DIRECTORY = "/tftpboot"
+GET_CONFIG_TRIGGER_FILE = "/get-config"
 
 
 class FortiOS_vm(vrnetlab.VM):
@@ -122,6 +124,39 @@ class FortiOS_vm(vrnetlab.VM):
         returns False when it has failed and given up, otherwise True
         """
         self.driver.process_state()
+
+    def work(self):
+        super().work()
+        if self.running:
+            self._handle_get_config_trigger()
+
+    def _handle_get_config_trigger(self):
+        if not os.path.exists(GET_CONFIG_TRIGGER_FILE):
+            return
+        try:
+            os.remove(GET_CONFIG_TRIGGER_FILE)
+        except Exception as exc:
+            self.logger.error(f"Failed to cleanup {GET_CONFIG_TRIGGER_FILE}: {exc}")
+
+        self._telnet_connect()
+        self.driver.save_config()
+        self.logger.debug("get-config")
+
+    def _telnet_connect(self):
+        try:
+            if self.tn is not None and self.tn.get_socket().fileno() >= 0:
+                self.tn.write(b"\r")
+                return
+        except Exception:
+            pass
+        try:
+            self.tn = telnetlib.Telnet("127.0.0.1", 5000 + self.num)
+        except Exception:
+            self.logger.exception("Failed to connect to VM serial port.")
+            self.stop()
+            raise
+        self.stopped = False
+        self.tn.write(b"\r")
 
     def gen_mgmt(self):
         return self._mgmt_net.gen_mgmt(self)
