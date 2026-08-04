@@ -75,8 +75,10 @@ applies the intended startup config.
 | --- | --- | --- | --- |
 | `CLAB_MGMT_PASSTHROUGH` | `true` | `true`, `false` | Selects management wiring. `true` uses tap/tc passthrough so the FortiGate management interface participates directly in the Containerlab management network. `false` uses a host-forwarded bridge inside the vrnetlab container. |
 | `FOS_DISK_SPECS` | unset | comma-separated `qemu-img create` sizes, for example `10g` or `10g,10g` | Adds extra virtio disks. One disk becomes the FortiGate log disk. Additional disks are formatted during bootstrap; the second disk is expected to become WAN optimization storage on FortiOS versions that support it. |
+| `FOS_MGMT_DNS_PRIMARY` | `1.1.1.1` | IPv4 address | Sets the primary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. |
+| `FOS_MGMT_DNS_SECONDARY` | `8.8.8.8` | IPv4 address | Sets the secondary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. The legacy misspelling `FOS_MGMG_DNS_SECONDARY` remains accepted. |
+| `FOS_NO_ENC_CONFIG` | `false` | `true`, `false` | When `true`, ignores ENC-only changes on entries that already exist in the baseline. New entries and entries with other changes retain their encrypted fields. |
 | `FORTIGATE_UUID` | random UUID | UUID string | Sets the QEMU VM UUID. If unset, a new UUID is generated for each launch. |
-| `FOS_LOG_ENCODED` | `false` | `true`, `false` | Logs encoded serial bytes instead of decoded text when enabled. Useful for debugging prompt or terminal parsing issues. |
 
 Containerlab also passes the usual vrnetlab launch arguments such as hostname,
 username, password, and connection mode. For manual runs these are available as
@@ -135,9 +137,81 @@ end
 The importer validates basic `config` / `edit` / `next` / `end` nesting and
 fails startup on malformed structure.
 
-The launcher also sets baseline system configuration needed for lab operation,
-including management interface addressing, FortiGuard interface selection, DNS,
-hostname, and the final administrator account.
+## Default Startup Configuration
+
+Before the user startup config is applied, the launcher leaves this baseline in
+the node when management IPv4 is static. Values in angle brackets are derived
+from Containerlab management settings and node credentials. With DHCP
+management, the static `port1` and route `9999` configuration is omitted.
+
+```text
+config system interface
+    edit port1
+        set mode static
+        set ip <management-ipv4/prefix>
+        set allowaccess ping https ssh http
+        config ipv6                         # when management IPv6 is configured
+            set ip6-mode static
+            set ip6-address <management-ipv6/prefix>
+            set ip6-allowaccess ping https ssh http
+        end
+    next
+end
+
+config system fortiguard
+    set interface-select-method specify
+    set interface port1
+    set auto-join-forticloud disable
+end
+
+config router static
+    edit 9999
+        set gateway <management-ipv4-gateway>
+        set device port1
+    next
+end
+
+config router static6                       # when management IPv6 is configured
+    edit 9999
+        set gateway <management-ipv6-gateway>
+        set device port1
+    next
+end
+
+config system global
+    set admin-scp enable
+    set hostname <node-name>
+end
+
+config system password-policy
+    set status disable
+end
+
+config system admin
+    edit <username>                          # `admin` by default
+        set accprofile super_admin
+        set password <password>              # `admin` by default
+    next
+end
+
+config system console
+    set output more
+end
+```
+
+The DNS servers selected by `FOS_MGMT_DNS_PRIMARY` and
+`FOS_MGMT_DNS_SECONDARY` are configured only while the launcher is bootstrapping
+and are then unset. They are not part of the final baseline.
+
+When a license is installed, the launcher reapplies management configuration
+after the license reboot and attempts to place `port1` and route `9999` in VRF
+1. On FortiProxy, where `set vrf 1` is unsupported, route `9999` is narrowed to
+the management gateway destination using the management address prefix; this
+avoids overriding a lab default route.
+
+The launcher captures this baseline before it imports the user startup config.
+The startup config can override preceding baseline commands, except that the
+launcher restores console pagination to `more` after import.
 
 ## Licensing
 
@@ -192,6 +266,19 @@ The serial connection is closed after capture so the console remains available
 for external use. If console pagination was enabled before capture, it is
 temporarily disabled and then restored.
 
+The comparison parses `config` and `edit` blocks into a tree. Unchanged entries
+are skipped. New entries are written completely, including encrypted fields.
+For an existing entry, any non-encrypted body change causes its complete current
+subtree to be written, including encrypted fields and any nested `config`
+blocks. Parent `config` / `edit` ancestry is retained so `current.conf` remains
+replayable.
+
+FortiOS may emit a different `ENC` representation on each `show`. By default,
+an ENC-only difference therefore saves the complete existing entry. Set
+`FOS_NO_ENC_CONFIG=true` to ignore ENC-only differences; encrypted fields are
+still retained when a new entry or another body change causes that entry to be
+saved.
+
 ## Boot Features
 
 The FortiOS launcher uses a CLI finite-state machine rather than fixed sleeps.
@@ -201,6 +288,7 @@ User-visible behavior includes:
   welcome banner, reboot, shutdown, and command prompts
 - buffered prompt matching for fragmented serial output
 - hostname update and prompt-pattern update during bootstrap
+- `admin-scp` enabled for configuration backup support
 - default credential handling across FortiOS 6.4, 7.x, and 8.x behavior
 - password-policy failure surfaced as a startup error
 - explicit failure if no `qcow2` image is present
