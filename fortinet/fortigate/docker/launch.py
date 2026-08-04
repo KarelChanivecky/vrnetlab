@@ -2,16 +2,19 @@
 import logging
 import os
 import re
+import select
 import signal
 import sys
-import telnetlib
+import time
 import uuid
+from contextlib import contextmanager
 
 import vrnetlab
 from fos_cli_driver import FOSCliDriver
 from host_forwarded_bridge import HostForwardedBridge
 from net_mgmt_strategy import NetMgmtStrategy
 from passthrough_redirect import PassthroughRedirect
+from terminal import Terminal
 from tftp import TFTPServer
 
 
@@ -45,6 +48,37 @@ TFTP_DIRECTORY = "/tftpboot"
 GET_CONFIG_TRIGGER_FILE = "/get-config"
 
 
+class FortiOSConsole(vrnetlab._Console):
+    def __init__(self, driver):
+        super().__init__(driver)
+        self._output_enabled = True
+
+    def _read(self):
+        data = self._driver.channel.read()
+        if data and self._output_enabled:
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+        return data
+
+    def read_very_eager(self):
+        transport_socket = getattr(self._driver.transport, "socket", None)
+        socket = getattr(transport_socket, "sock", None)
+        if socket is not None:
+            readable, _, _ = select.select([socket], [], [], 0)
+            if not readable:
+                return b""
+        return self._read()
+
+    @contextmanager
+    def suppress_output(self):
+        output_enabled = self._output_enabled
+        self._output_enabled = False
+        try:
+            yield
+        finally:
+            self._output_enabled = output_enabled
+
+
 class FortiOS_vm(vrnetlab.VM):
     def __init__(self, hostname: str, username, password, conn_mode, mgmt_net: NetMgmtStrategy):
         disk_image = None
@@ -63,6 +97,7 @@ class FortiOS_vm(vrnetlab.VM):
             provision_pci_bus=False,
             mgmt_passthrough=mgmt_net.mgmt_passthrough
         )
+        self.tn = FortiOSConsole(self.scrapli_tn)
 
         self.logger.info(f"Launching. commandline: {' '.join(sys.argv)}")
         self.conn_mode = conn_mode
@@ -76,7 +111,8 @@ class FortiOS_vm(vrnetlab.VM):
         self.waiting_for = False
         self._mgmt_net = mgmt_net
         self._mgmt_net.configure_vm_mgmt(self)
-        self.driver = FOSCliDriver(terminal=self,
+        self.terminal = Terminal(self.tn, self.logger, default_wait=self.wait_pattern)
+        self.driver = FOSCliDriver(terminal=self.terminal,
                                    mgmt_passthrough=self.mgmt_passthrough,
                                    username=username,
                                    password=password,
@@ -123,7 +159,13 @@ class FortiOS_vm(vrnetlab.VM):
 
         returns False when it has failed and given up, otherwise True
         """
-        self.driver.process_state()
+        try:
+            self.driver.process_state()
+        except Exception:
+            self.stop()
+            raise
+        if self.driver.ready:
+            self.running = True
 
     def work(self):
         super().work()
@@ -138,25 +180,38 @@ class FortiOS_vm(vrnetlab.VM):
         except Exception as exc:
             self.logger.error(f"Failed to cleanup {GET_CONFIG_TRIGGER_FILE}: {exc}")
 
-        self._telnet_connect()
-        self.driver.save_config()
         self.logger.debug("get-config")
-
-    def _telnet_connect(self):
+        self._serial_connect()
         try:
-            if self.tn is not None and self.tn.get_socket().fileno() >= 0:
-                self.tn.write(b"\r")
-                return
+            self.driver.save_config()
         except Exception:
-            pass
-        try:
-            self.tn = telnetlib.Telnet("127.0.0.1", 5000 + self.num)
-        except Exception:
-            self.logger.exception("Failed to connect to VM serial port.")
             self.stop()
             raise
+        self.logger.debug("get-config done")
+
+    def _serial_connect(self):
+        try:
+            self.terminal.close()
+        except Exception:
+            pass
+
+        for attempt in range(1, vrnetlab.MAX_RETRIES + 1):
+            try:
+                self.tn.open()
+                break
+            except Exception:
+                if attempt == vrnetlab.MAX_RETRIES:
+                    self.logger.exception("Failed to connect to VM serial port.")
+                    self.stop()
+                    raise
+                self.logger.error(
+                    f"Unable to connect to VM serial port {5000 + self.num}, "
+                    f"retrying in a second (attempt {attempt})"
+                )
+                time.sleep(1)
+
         self.stopped = False
-        self.tn.write(b"\r")
+        self.terminal.write(b"\r")
 
     def gen_mgmt(self):
         return self._mgmt_net.gen_mgmt(self)
