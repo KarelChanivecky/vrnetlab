@@ -16,7 +16,7 @@ class FOSCliState(IntEnum):
 
 
 DEFAULT_HOSTNAME_REGEX = rb"[A-Za-z0-9_.-]+(?:-VM64)?-KVM(?:-[A-Za-z0-9]*)?"
-OLD_LIC_HOSTNAME_REGEX = rb"[A-Z]{4,}[0-9]{4,}"
+LICENSED_HOSTNAME_REGEX = rb"[A-Z][A-Z0-9]{7,}"
 DEFAULT_HOSTNAME_PROMPT = rb"(?m)^\s*" + DEFAULT_HOSTNAME_REGEX + rb"(?:\s+\((?:STS|Interim)\))?\s*[#$]\s*"
 
 FOS_CLI_STATE_PATTERNS = [None] * FOSCliState.UNKNOWN.value
@@ -44,34 +44,3 @@ class Credentials:
         super().__init__()
         self.username = username
         self.password = password
-
-
-class LineBuffer:
-    def __init__(self, lines=2, max_buffer=1024) -> None:
-        super().__init__()
-        if lines < 1:
-            raise ValueError("lines must be at least 1")
-        self._lines = lines
-        self._max_buffer = max_buffer
-        self._data = b""
-
-    @property
-    def data(self):
-        return self._data
-
-    def put(self, data):
-        if not data:
-            return
-        self._data += data
-        newline_indexes = [idx for idx, byte in enumerate(self._data) if byte == ord("\n")]
-        keep_from_index = -1
-        if self._data.endswith(b"\n") and len(newline_indexes) > self._lines:
-            keep_from_index = newline_indexes[-(self._lines + 1)]
-        elif not self._data.endswith(b"\n") and len(newline_indexes) >= self._lines:
-            keep_from_index = newline_indexes[-self._lines]
-        if keep_from_index >= 0:
-            self._data = self._data[keep_from_index:]
-        self._data = self._data[-self._max_buffer:]
-
-    def clear(self):
-        self._data = b""
