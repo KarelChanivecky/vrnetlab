@@ -110,10 +110,10 @@ class FOSCommander:
 
     def on_output(self, output):
         if not output:
-            return
-        if self._inflight and self._capture_attempt_output():
-            self._append_output(self._inflight, output)
-            self._active_feature.on_output(self, self._inflight, output)
+            return False
+        if self._inflight:
+            return bool(self._active_feature.on_output(self, self._inflight, output))
+        return False
 
     def on_state(self, state, output):
         """Called by the driver for every recognized serial state."""

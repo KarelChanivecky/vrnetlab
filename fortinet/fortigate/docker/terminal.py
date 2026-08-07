@@ -87,6 +87,15 @@ class Terminal:
         del self._buffer[:match.end()]
         return index, stable_match, consumed
 
+    def discard(self, data):
+        """Discard bytes that a caller has consumed from the retained buffer."""
+        if not data:
+            return
+        if not self._buffer.startswith(data):
+            self._logger.debug("Refusing to discard non-prefix terminal output")
+            return
+        del self._buffer[:len(data)]
+
     def close(self):
         self._buffer.clear()
         self._connection.close()

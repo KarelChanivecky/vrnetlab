@@ -75,9 +75,11 @@ class FOSCliDriver:
         while not self.ready and time.time() < spin_start + PROCESS_SPIN_SECONDS:
             state, output, matched = self._next_state()
             if output and not matched:
-                self._commander.on_output(output)
+                if self._commander.on_output(output):
+                    self._terminal.discard(output)
                 if state == FOSCliState.UNKNOWN:
                     self._note_unknown_output()
+                output = b""
             if state.value < FOSCliState.UNKNOWN.value:
                 self._idle_spins = 0
                 self._last_known_state = state
