@@ -25,18 +25,19 @@ class CredentialsFeature(StaticFeature):
         super().__init__(vm, commander, "admin", [
             ConfigBlock("system password-policy", [CommandSpec("set status disable")]),
             ConfigBlock("system admin", [EditBlock(credentials.username, admin_children)]),
-        ], on_complete=lambda _commander: self._activate_desired_credentials())
+        ], on_complete=lambda: self._activate_desired_credentials())
 
-    def on_session_loss(self, commander, attempt):
+    def on_session_loss(self, attempt):
         if self._is_password_command(attempt.spec.line):
             self._activate_desired_credentials()
             self._activate_after_admin_commit = False
-        return super().on_session_loss(commander, attempt)
+        return super().on_session_loss(attempt)
 
-    def on_command_result(self, commander, attempt, state, output):
-        if self._is_password_command(attempt.spec.line):
+    def on_command_executed(self, command, state):
+        line = command.spec.line
+        if self._is_password_command(line):
             self._activate_after_admin_commit = True
-        elif self._activate_after_admin_commit and attempt.spec.line == "next":
+        elif self._activate_after_admin_commit and line == "next":
             self._activate_desired_credentials()
             self._activate_after_admin_commit = False
 

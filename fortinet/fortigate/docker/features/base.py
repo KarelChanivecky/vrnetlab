@@ -7,6 +7,7 @@ class Feature:
         self.commander = commander
         self.name = name
         self._completed = False
+        self._current_attempt = None
 
     @property
     def completed(self):
@@ -15,23 +16,43 @@ class Feature:
     def mark_completed(self):
         self._completed = True
 
+    @property
+    def completion_message(self):
+        return None
+
     def begin_activation(self):
         """Prepare this feature instance for an initial or later command stage."""
         self._completed = False
+        self._current_attempt = None
 
-    def activate(self, commander):
-        commander.feature_complete(self)
+    @property
+    def current_attempt(self):
+        return self._current_attempt
 
-    def on_output(self, commander, attempt, output):
+    @property
+    def current_command(self):
+        return self._current_attempt.spec if self._current_attempt else None
+
+    @property
+    def command_output(self):
+        return bytes(self._current_attempt.output) if self._current_attempt else b""
+
+    def activate(self):
+        self.commander.feature_complete(self)
+
+    def on_command_dispatched(self, attempt):
+        self._current_attempt = attempt
+
+    def on_output(self, output):
         return False
 
-    def on_command_result(self, commander, attempt, state, output):
+    def on_command_executed(self, command, state):
         pass
 
-    def on_block_complete(self, commander):
-        commander.feature_complete(self)
+    def on_block_complete(self):
+        self.commander.feature_complete(self)
 
-    def on_session_loss(self, commander, attempt):
+    def on_session_loss(self, attempt):
         return attempt.spec.session_loss
 
     def reversal_blocks(self):
@@ -65,19 +86,19 @@ class StaticFeature(Feature):
         self._blocks = list(blocks)
         self._on_complete = on_complete
 
-    def activate(self, commander):
-        self._submit_next(commander)
+    def activate(self):
+        self._submit_next()
 
-    def _submit_next(self, commander):
+    def _submit_next(self):
         if self._blocks:
-            commander.submit_block(self, self._blocks.pop(0))
+            self.commander.submit_block(self, self._blocks.pop(0))
             return
         if self._on_complete:
-            self._on_complete(commander)
-        commander.feature_complete(self)
+            self._on_complete()
+        self.commander.feature_complete(self)
 
-    def on_block_complete(self, commander):
-        self._submit_next(commander)
+    def on_block_complete(self):
+        self._submit_next()
 
 
 class _FeatureUndo(StaticFeature):
@@ -87,8 +108,8 @@ class _FeatureUndo(StaticFeature):
         super().__init__(vm, commander, f"undo-{target.name}", ())
         self._target = target
 
-    def activate(self, commander):
+    def activate(self):
         if not self._target.completed:
             raise RuntimeError(f"Cannot undo incomplete feature {self._target.name}")
         self._blocks = list(self._target.reversal_blocks())
-        super().activate(commander)
+        super().activate()

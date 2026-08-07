@@ -18,26 +18,26 @@ class FormatDisks(Feature):
         self._disk_number = 2
         self._phase = "list"
 
-    def activate(self, commander):
+    def activate(self):
         if not self._count:
-            commander.feature_complete(self)
+            self.commander.feature_complete(self)
             return
-        self._submit_list(commander)
+        self._submit_list()
 
-    def _submit_list(self, commander):
-        commander.submit_block(self, CommandSequence("disk-list", [
+    def _submit_list(self):
+        self.commander.submit_block(self, CommandSequence("disk-list", [
             CommandSpec("exe disk list", capture_output=True),
         ]))
 
-    def on_command_result(self, commander, attempt, state, output):
+    def on_command_executed(self, command, state):
         if self._phase == "list":
-            disk_ref = self._disk_ref(output)
-            commander.submit_block(self, CommandSequence("disk-format", [
+            disk_ref = self._disk_ref(bytes(command.output))
+            self.commander.submit_block(self, CommandSequence("disk-format", [
                 CommandSpec(f"exe disk format {disk_ref}", completion_states=(FOSCliState.CONFIRMATION,)),
             ]))
             self._phase = "format"
         elif self._phase == "format" and state == FOSCliState.CONFIRMATION:
-            commander.submit_block(self, CommandSequence("disk-confirm", [
+            self.commander.submit_block(self, CommandSequence("disk-confirm", [
                 CommandSpec("y", completion_states=(FOSCliState.REBOOTING,),
                             session_loss=SessionLossAction.CONTINUE),
             ]))
@@ -53,21 +53,21 @@ class FormatDisks(Feature):
             raise RuntimeError(f"Could not find configured disk #{self._disk_number}")
         return match.group(1).decode()
 
-    def on_block_complete(self, commander):
+    def on_block_complete(self):
         if self._phase == "restart-list":
             self._phase = "list"
-            self._submit_list(commander)
+            self._submit_list()
             return
         if self._phase == "reboot":
             self._count -= 1
             self._disk_number += 1
             if self._count == 0:
-                commander.feature_complete(self)
+                self.commander.feature_complete(self)
                 return
             self._phase = "list"
-            self._submit_list(commander)
+            self._submit_list()
 
-    def on_session_loss(self, commander, attempt):
+    def on_session_loss(self, attempt):
         if self._phase == "reboot":
             self._count -= 1
             self._disk_number += 1
