@@ -36,15 +36,15 @@ class SetLicense(Feature):
         self._phase = "restore"
         self._wait_for_prompt = False
 
-    def activate(self, commander):
+    def activate(self):
         if not self._enabled:
-            commander.feature_complete(self)
+            self.commander.feature_complete(self)
             return
         self.vm.driver.set_prompt_patterns(BOOTSTRAP_HOSTNAME_REGEX)
-        self._submit_restore(commander)
+        self._submit_restore()
 
-    def _submit_restore(self, commander):
-        commander.submit_block(self, CommandSequence("restore-license", [
+    def _submit_restore(self):
+        self.commander.submit_block(self, CommandSequence("restore-license", [
             CommandSpec(
                 f"exe restore vmlicense tftp appliance.lic {self._tftp_server_ip}",
                 completion_states=(FOSCliState.CONFIRMATION,),
@@ -52,10 +52,10 @@ class SetLicense(Feature):
             ),
         ]))
 
-    def on_command_result(self, commander, attempt, state, output):
+    def on_command_executed(self, command, state):
         if self._phase == "restore" and state == FOSCliState.CONFIRMATION:
             self._phase = "restore-confirmed"
-            commander.submit_block(self, CommandSequence("confirm-license", [
+            self.commander.submit_block(self, CommandSequence("confirm-license", [
                 CommandSpec(
                     "y",
                     completion_states=(FOSCliState.REBOOTING,),
@@ -66,7 +66,7 @@ class SetLicense(Feature):
             self._phase = "wait-prompt"
             self._wait_for_prompt = True
 
-    def on_block_complete(self, commander):
+    def on_block_complete(self):
         if self._phase in ("restore", "restore-confirmed"):
             return
         if self._phase == "wait-prompt":
@@ -75,9 +75,9 @@ class SetLicense(Feature):
                 return
             self._phase = "done"
         if self._phase == "done":
-            commander.feature_complete(self)
+            self.commander.feature_complete(self)
 
-    def on_session_loss(self, commander, attempt):
+    def on_session_loss(self, attempt):
         if attempt.spec.session_loss == SessionLossAction.CONTINUE:
             self._phase = "wait-prompt"
             self._wait_for_prompt = True
@@ -96,16 +96,16 @@ class WaitForLicenseValidation(Feature):
         self._phase = "idle"
         self._standard_output_active = False
 
-    def activate(self, commander):
+    def activate(self):
         if not self._enabled:
-            commander.feature_complete(self)
+            self.commander.feature_complete(self)
             return
         self._deadline = time.monotonic() + license_status_timeout_seconds()
         self._phase = "polling"
         self._next_poll = time.monotonic()
 
-    def on_command_result(self, commander, attempt, state, output):
-        status = self._license_status(output)
+    def on_command_executed(self, command, state):
+        status = self._license_status(bytes(command.output))
         if status and status.lower() != "pending":
             self._logger.info(f"License status changed to {status}")
             self._phase = "done"
@@ -119,27 +119,27 @@ class WaitForLicenseValidation(Feature):
             match = re.search(rb"(?mi)^License:\s*(.+?)\s*\r?$", output)
         return match.group(1).decode(errors="replace").strip() if match else None
 
-    def on_block_complete(self, commander):
+    def on_block_complete(self):
         if self._phase == "done":
-            commander.feature_complete(self)
+            self.commander.feature_complete(self)
 
-    def tick(self, commander):
+    def tick(self):
         if self._phase != "polling" or self._next_poll is None:
             return
         if time.monotonic() >= self._deadline:
             self._logger.warning("License status remained Pending.")
             self._phase = "done"
-            commander.feature_complete(self)
+            self.commander.feature_complete(self)
             return
-        if time.monotonic() >= self._next_poll and not commander.busy:
+        if time.monotonic() >= self._next_poll and not self.commander.busy:
             self._next_poll = None
             if self._standard_output_active:
-                self._submit_status_poll(commander)
+                self._submit_status_poll()
             else:
                 self._standard_output_active = True
-                commander.with_standard_output(self, lambda: self._submit_status_poll(commander))
+                self.commander.with_standard_output(self, self._submit_status_poll)
 
-    def _submit_status_poll(self, commander):
-        commander.submit_block(self, CommandSequence("license-validation", [
+    def _submit_status_poll(self):
+        self.commander.submit_block(self, CommandSequence("license-validation", [
             CommandSpec("get system status", capture_output=True, suppress_output=True),
         ]))

@@ -24,10 +24,21 @@ Important behavior:
 - `Terminal.expect()` keeps unmatched bytes in an internal buffer across calls.
   FortiOS prompts and banners often arrive fragmented, so callers must not
   assume one read equals one logical event.
+- `Terminal.expect()` returns a `Data` object, not raw bytes. `Data` is a byte
+  view of what was just read or matched, and timeout `Data` can discard bytes
+  from the terminal's retained buffer.
 - When multiple regexes match buffered output, the match that ends earliest
   wins. This avoids later, broader prompt patterns swallowing earlier prompts.
 - Matched bytes are consumed from the buffer; bytes after the match stay queued
   for the next state parse.
+- Timeout bytes are not consumed automatically. A command, feature, or commander
+  inspection path must call `data.discard(...)` if it has assigned meaning to
+  those bytes. Otherwise the bytes stay in the terminal buffer and can be
+  matched again when later output completes a prompt or state.
+- Retained terminal data is bounded by `FOS_TERMINAL_BUFFER_LIMIT_BYTES`, which
+  defaults to 1 MiB. If the buffer grows beyond that limit, bootstrap fails
+  instead of truncating data, because oversized retained output means some layer
+  failed to consume bytes it understood.
 - `suppress_output()` temporarily prevents machine-readable commands such as
   `show` and `get system status` from being mirrored to the visible serial log,
   while still keeping their output available to the parser.
@@ -60,6 +71,11 @@ handles login/pager responses itself, and then tells `FOSCommander` what state
 was observed. Command dispatch is deliberately not done directly in the driver;
 the driver only answers FortiOS protocol prompts and feeds state to the
 dispatcher.
+
+The driver does not decide whether unknown or prompt-echo output is meaningful.
+It passes `Data` to the commander. If the downstream command, feature, or
+commander inspection path discards it, the terminal buffer is updated through
+the `Data` object. If it is not discarded, the bytes remain buffered.
 
 There are two prompt-pattern phases:
 
@@ -109,6 +125,67 @@ Features can request console output mode `standard` for machine-readable output;
 the dispatcher detects the current console mode, changes it only when needed,
 and restores `more` after the feature completes.
 
+## Output Handling
+
+All CLI output passed into `FOSCommander` is `terminal.Data`. The commander does
+not accept raw bytes and does not own output buffering. The output path is:
+
+```text
+Terminal.expect() -> Data -> FOSCliDriver -> FOSCommander
+```
+
+When output arrives while a command is in flight, the commander offers it in
+this order:
+
+```text
+CommandAttempt.on_output(data)
+Feature.on_output(data)
+FOSCommander._inspect_output(data)
+```
+
+The first layer that understands the data consumes it by calling
+`data.discard(...)`. Consumption has two effects:
+
+- the consumer records whatever state it needs, such as command output
+- the terminal buffer discards the consumed bytes when the `Data` object is a
+  timeout view into retained terminal data
+
+Command output capture belongs to `CommandAttempt`. If a command has
+`capture_output=True`, `CommandAttempt.on_output(data)` appends
+`bytes(data)` to `command.output` and discards those bytes. When the command
+finishes, the feature receives the completed command:
+
+```text
+on_command_executed(command, state)
+```
+
+Features inspect `command.spec` to know which command completed and
+`bytes(command.output)` to inspect captured output. Features should not
+reconstruct command output from commander state.
+
+`Feature.on_output(data)` remains for out-of-band streams. For example, a
+feature may start a debug command and wait for asynchronous data that is not the
+normal command completion transcript. If the feature recognizes that data, it
+must call `data.discard(...)` before returning true. If it does not recognize
+the data, it returns false and the commander can inspect it or leave it buffered.
+
+Prompt echo uses the same path. `CMD_PROMPT_ECHO` is not special-cased with a
+separate parser in the commander. The driver passes the prompt-echo `Data` to
+`FOSCommander.on_prompt_echo()`, which calls `on_output(data)`. If any layer
+discards the data, no recovery newline is sent. If no layer consumes it, the
+commander sends a newline to request a clean prompt.
+
+This is the critical invariant: output that has been assigned meaning must be
+discarded through `Data`; output that is not understood must remain buffered so
+it can be completed by later serial data.
+
+The retained terminal buffer has a hard upper bound. The default is 1 MiB, set
+with `FOS_TERMINAL_BUFFER_LIMIT_BYTES` when a larger diagnostic window is needed.
+The limit is intentionally enforced as an error rather than a ring buffer: if
+retained data grows without being consumed, the command/feature/commander stack
+has lost ownership of some output and continuing would risk replaying stale
+bytes into later state decisions.
+
 ## Feature Architecture
 
 Bootstrap work is split into feature objects under `features/`. A feature has a
@@ -119,10 +196,12 @@ The core lifecycle is:
 
 ```text
 begin_activation()
-activate(commander)
-on_command_result(...)
-on_block_complete(...)
-on_session_loss(...)
+ promactivate()
+on_command_dispatched(attempt)
+on_output(output)
+on_command_executed(command, state)
+on_block_complete()
+on_session_loss(attempt)
 mark_completed()
 ```
 

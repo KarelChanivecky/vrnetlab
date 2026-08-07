@@ -41,6 +41,14 @@ class CommandAttempt:
     session_epoch: int
     output: bytearray = field(default_factory=bytearray)
 
+    def on_output(self, output):
+        if not self.spec.capture_output:
+            return False
+        data = bytes(output)
+        self.output.extend(data)
+        output.discard(data)
+        return True
+
 
 class Scope:
     def __init__(self, value, children=()):

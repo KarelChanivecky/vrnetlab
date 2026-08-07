@@ -13,31 +13,31 @@ class ConfigureMgmtDns(Feature):
         self._phase = "inspect"
         self._previous_protocol = None
 
-    def activate(self, commander):
-        commander.with_standard_output(self, lambda: commander.submit_block(
+    def activate(self):
+        self.commander.with_standard_output(self, lambda: self.commander.submit_block(
             self,
             CommandSequence("dns-protocol-inspect", [
                 CommandSpec("show full-configuration system dns", capture_output=True, suppress_output=True),
             ]),
         ))
 
-    def on_command_result(self, commander, attempt, state, output):
+    def on_command_executed(self, command, state):
         if self._phase != "inspect":
             return
-        self._previous_protocol = self._protocol_from(output)
+        self._previous_protocol = self._protocol_from(bytes(command.output))
         if self._previous_protocol is None:
-            commander.logger.warning("Could not determine current DNS protocol; undo will unset it")
+            self.commander.logger.warning("Could not determine current DNS protocol; undo will unset it")
 
-    def on_block_complete(self, commander):
+    def on_block_complete(self):
         if self._phase == "inspect":
             self._phase = "apply"
-            commander.submit_block(self, ConfigBlock("system dns", [
+            self.commander.submit_block(self, ConfigBlock("system dns", [
                 CommandSpec("set protocol cleartext"),
                 CommandSpec(f"set primary {self.vm.mgmt_dns_primary}"),
                 CommandSpec(f"set secondary {self.vm.mgmt_dns_secondary}"),
             ]))
             return
-        commander.feature_complete(self)
+        self.commander.feature_complete(self)
 
     @staticmethod
     def _protocol_from(output):

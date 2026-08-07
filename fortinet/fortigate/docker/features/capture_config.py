@@ -27,13 +27,19 @@ class ConfigSaveFeature(Feature):
         self._current_path = current_path
         self._trigger_path = trigger_path
         self._stage = "baseline"
+        self._completion_message = None
+
+    @property
+    def completion_message(self):
+        return self._completion_message
 
     @property
     def file_path(self):
         return self._trigger_path
 
-    def activate(self, commander):
-        commander.with_standard_output(self, lambda: commander.submit_block(
+    def activate(self):
+        self._completion_message = None
+        self.commander.with_standard_output(self, lambda: self.commander.submit_block(
             self,
             CommandSequence(f"{self.name}-{self._stage}", [
                 CommandSpec("show", capture_output=True, suppress_output=True),
@@ -61,10 +67,11 @@ class ConfigSaveFeature(Feature):
         if not self.commander.enqueue_runtime_feature(self):
             self.commander.logger.warning("get-config ignored while the CLI is busy")
 
-    def on_command_result(self, commander, attempt, state, output):
-        config = self.clean_show_output(output)
+    def on_command_executed(self, command, state):
+        config = self.clean_show_output(bytes(command.output))
         if self._stage == "baseline":
             self.write_config_file(self._baseline_path, config)
+            self._completion_message = f"Baseline config saved to {self._baseline_path}"
         else:
             with open(self._baseline_path) as baseline:
                 baseline_config = baseline.read()
@@ -72,9 +79,10 @@ class ConfigSaveFeature(Feature):
                 self._current_path,
                 self.config_delta(baseline_config, config),
             )
+            self._completion_message = f"Config saved to {self._current_path}"
 
-    def on_block_complete(self, commander):
-        commander.feature_complete(self)
+    def on_block_complete(self):
+        self.commander.feature_complete(self)
 
     @staticmethod
     def clean_show_output(output):
