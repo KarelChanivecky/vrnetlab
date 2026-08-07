@@ -1,14 +1,15 @@
 """Event-driven command scheduler for the FortiOS CLI."""
 
 import datetime
-import logging
 import re
 from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass
 
 from cli_commands import CleanupAction, CommandAttempt, CommandSequence, CommandSpec, ConfigBlock, SessionLossAction
+from terminal import Data
 from common import FOSCliState, TRACE_LEVEL
+
 DISPATCHABLE_COMPLETION_STATES = {
     FOSCliState.CMD_PROMPT,
     FOSCliState.CONFIRMATION,
@@ -45,6 +46,8 @@ class FOSCommander:
         self._standard_output_context = None
         self._suppression = ExitStack()
         self._ready = False
+        self._startup_complete = False
+        self._completed_messages = deque()
         self._start_time = datetime.datetime.now()
 
     @property
@@ -60,7 +63,7 @@ class FOSCommander:
 
     def tick(self):
         if self._active_feature and hasattr(self._active_feature, "tick"):
-            self._active_feature.tick(self)
+            self._active_feature.tick()
 
     def submit_block(self, feature, block):
         if feature is not self._active_feature:
@@ -76,6 +79,8 @@ class FOSCommander:
         if self.busy:
             raise RuntimeError("Feature completed while commands are still pending")
         feature.mark_completed()
+        if feature.completion_message:
+            self._completed_messages.append(feature.completion_message)
         self._finish_standard_output_context(feature)
         self._schedule_feature_cleanup(feature, "completion")
         self._active_feature = None
@@ -109,18 +114,21 @@ class FOSCommander:
                 self._cleanup.extend(action.block.flatten())
 
     def on_output(self, output):
+        if not isinstance(output, Data):
+            raise TypeError("commander output must be terminal.Data")
         if not output:
-            return False
+            return output
         if self._inflight:
-            return bool(self._active_feature.on_output(self, self._inflight, output))
-        return False
+            if self._inflight.on_output(output):
+                return output
+            if self._active_feature and self._active_feature.on_output(output):
+                return output
+        self._inspect_output(output)
+        return output
 
     def on_state(self, state, output):
         """Called by the driver for every recognized serial state."""
-        if self._inflight and output and self._capture_attempt_output():
-            # Terminal matching may include bytes read before the most recent
-            # raw-output event. Keep a complete, de-duplicated transcript.
-            self._append_output(self._inflight, output)
+        self.on_output(output)
 
         if state == FOSCliState.SESSION_LOST:
             self._handle_session_loss()
@@ -138,6 +146,17 @@ class FOSCommander:
         if state == FOSCliState.CMD_PROMPT and not self._recovering:
             self._dispatch_next()
 
+    def on_prompt_echo(self, output):
+        """Handle a prompt line that had trailing text after the prompt token."""
+        if self.on_output(output).discarded:
+            return
+        self.logger.debug("Prompt had unexpected trailing output; requesting a clean prompt")
+        self.terminal.write(b"\r")
+
+    def _inspect_output(self, output):
+        if self._recovering:
+            output.discard()
+
     def on_idle_prompt(self):
         """Dispatch work queued by tick callbacks while already at a prompt."""
         if self._inflight or self._recovering:
@@ -146,32 +165,25 @@ class FOSCommander:
             self._dispatch_next()
 
     def _activate_next_feature(self):
-        if self._active_feature or self._recovering:
+        if self._ready or self._active_feature or self._recovering:
             return
         if not self._features:
             if self._cleanup:
                 return
             self._ready = True
             self.terminal.close()
-            elapsed = datetime.datetime.now() - self._start_time
-            self.logger.info(f"Startup complete in {elapsed}")
+            if not self._startup_complete:
+                self._startup_complete = True
+                elapsed = datetime.datetime.now() - self._start_time
+                self.logger.info(f"Startup complete in {elapsed}")
+            else:
+                while self._completed_messages:
+                    self.logger.info(self._completed_messages.popleft())
             return
         self._active_feature = self._features.popleft()
         self.logger.info(f"Activating feature {self._active_feature.name}")
         self._active_feature.begin_activation()
-        self._active_feature.activate(self)
-
-    @staticmethod
-    def _append_output(attempt, output):
-        """Append a terminal event without duplicating buffered partial output."""
-        previous = bytes(attempt.output)
-        overlap = min(len(previous), len(output))
-        while overlap and not previous.endswith(output[:overlap]):
-            overlap -= 1
-        attempt.output.extend(output[overlap:])
-
-    def _capture_attempt_output(self):
-        return True
+        self._active_feature.activate()
 
     def _dispatch_next(self):
         if self._inflight or self._recovering:
@@ -184,13 +196,15 @@ class FOSCommander:
             spec = self._cleanup.popleft()
             self._in_cleanup = True
         elif not self._pending:
-            self._active_feature.on_block_complete(self)
+            self._active_feature.on_block_complete()
             return
         else:
             spec = self._pending.popleft()
             self._in_cleanup = False
         self._attempt_number += 1
         self._inflight = CommandAttempt(spec, self._attempt_number, self._session_epoch)
+        if self._active_feature:
+            self._active_feature.on_command_dispatched(self._inflight)
         if spec.suppress_output:
             self._suppression.enter_context(self.terminal.suppress_output())
         self.logger.log(
@@ -214,10 +228,10 @@ class FOSCommander:
             if not self._recovering:
                 self._dispatch_next()
             return
-        self._active_feature.on_command_result(self, attempt, state, bytes(attempt.output))
+        self._active_feature.on_command_executed(attempt, state)
         # The callback may have installed another block (confirmation/query path).
         if not self.busy:
-            self._active_feature.on_block_complete(self)
+            self._active_feature.on_block_complete()
         if not self._recovering and state in DISPATCHABLE_COMPLETION_STATES:
             self._dispatch_next()
 
@@ -274,7 +288,7 @@ class FOSCommander:
             self._in_cleanup = False
             return
         self._schedule_feature_cleanup(self._active_feature, "interruption")
-        action = self._active_feature.on_session_loss(self, attempt)
+        action = self._active_feature.on_session_loss(attempt)
         self.logger.info(
             f"Session lost during {self._active_feature.name}/{attempt.spec.line!r}; {action.name.lower()}"
         )
@@ -301,6 +315,7 @@ class FOSCommander:
         if not self._ready or self.busy:
             return False
         self._ready = False
+        self._completed_messages.clear()
         for feature in reversed(features):
             self._features.appendleft(feature)
         return True

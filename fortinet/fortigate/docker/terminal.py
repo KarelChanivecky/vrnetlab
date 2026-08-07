@@ -1,10 +1,67 @@
 import cmd
 import logging
+import os
 import re
 import time
 from contextlib import contextmanager
 
 from common import TRACE_LEVEL
+
+
+DEFAULT_BUFFER_LIMIT_BYTES = 1024 * 1024
+BUFFER_LIMIT_ENV = "FOS_TERMINAL_BUFFER_LIMIT_BYTES"
+
+
+def terminal_buffer_limit_bytes():
+    configured = os.getenv(BUFFER_LIMIT_ENV)
+    if not configured:
+        return DEFAULT_BUFFER_LIMIT_BYTES
+
+    limit = int(configured)
+    if limit < 1:
+        raise ValueError(f"{BUFFER_LIMIT_ENV} must be greater than zero")
+    return limit
+
+
+class Data:
+    """A byte view returned by Terminal.expect with authority to discard itself."""
+
+    def __init__(self, value, discard_callback=None):
+        self.value = bytes(value)
+        self._discard_callback = discard_callback
+        self.discarded = False
+
+    def __bytes__(self):
+        return self.value
+
+    def __bool__(self):
+        return bool(self.value)
+
+    def __contains__(self, item):
+        return item in self.value
+
+    def __len__(self):
+        return len(self.value)
+
+    def __eq__(self, other):
+        return self.value == (bytes(other) if isinstance(other, Data) else other)
+
+    def __repr__(self):
+        return repr(self.value)
+
+    def startswith(self, *args, **kwargs):
+        return self.value.startswith(*args, **kwargs)
+
+    def decode(self, *args, **kwargs):
+        return self.value.decode(*args, **kwargs)
+
+    def discard(self, value=None):
+        discard_value = self.value if value is None else bytes(value)
+        if not discard_value:
+            return
+        if self._discard_callback:
+            self._discard_callback(discard_value)
+        self.discarded = True
 
 
 class Terminal:
@@ -15,6 +72,7 @@ class Terminal:
         self._logger = logger
         self._default_wait = default_wait
         self._buffer = bytearray()
+        self._buffer_limit = terminal_buffer_limit_bytes()
         self._output_suppression_depth = 0
         self._output_suppression_context = None
 
@@ -69,11 +127,12 @@ class Terminal:
 
         while result is None:
             if deadline is not None and time.monotonic() >= deadline:
-                return -1, None, bytes(received)
+                return -1, None, Data(bytes(received), self._discard_prefix)
 
             data = self._connection.read_very_eager()
             if data:
                 self._buffer.extend(data)
+                self._enforce_buffer_limit()
                 received.extend(data)
                 self._logger.log(TRACE_LEVEL - 1, f"buffer: {self._buffer}")
                 result = self._match(regex_list)
@@ -85,9 +144,9 @@ class Terminal:
         consumed = bytes(self._buffer[:match.end()])
         stable_match = re.search(regex_list[index], consumed)
         del self._buffer[:match.end()]
-        return index, stable_match, consumed
+        return index, stable_match, Data(consumed)
 
-    def discard(self, data):
+    def _discard_prefix(self, data):
         """Discard bytes that a caller has consumed from the retained buffer."""
         if not data:
             return
@@ -95,6 +154,19 @@ class Terminal:
             self._logger.debug("Refusing to discard non-prefix terminal output")
             return
         del self._buffer[:len(data)]
+
+    def _enforce_buffer_limit(self):
+        if len(self._buffer) <= self._buffer_limit:
+            return
+
+        self._logger.error(
+            "Terminal buffer exceeded %s bytes. Tail: %r",
+            self._buffer_limit,
+            bytes(self._buffer[-512:]),
+        )
+        raise RuntimeError(
+            f"Terminal buffer exceeded {self._buffer_limit} bytes without being consumed"
+        )
 
     def close(self):
         self._buffer.clear()

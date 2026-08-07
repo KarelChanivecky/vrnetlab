@@ -1,7 +1,6 @@
 import logging
 import re
 import time
-
 from common import (
     FOSCliState,
     FOS_CLI_STATE_PATTERNS,
@@ -56,6 +55,7 @@ class FOSCliDriver:
             FOSCliState.MORE_PROMPT: self._continue_pager,
             FOSCliState.CREDENTIAL_ACCEPTED: self._credential_accepted,
             FOSCliState.CMD_PROMPT: self._command_prompt,
+            FOSCliState.CMD_PROMPT_ECHO: None,
             FOSCliState.CREDENTIAL_REJECTED: self._credential_rejected,
             FOSCliState.LIC_FAIL: self._license_failed,
             FOSCliState.TN_TIMEOUT: self._timeout,
@@ -75,11 +75,10 @@ class FOSCliDriver:
         while not self.ready and time.time() < spin_start + PROCESS_SPIN_SECONDS:
             state, output, matched = self._next_state()
             if output and not matched:
-                if self._commander.on_output(output):
-                    self._terminal.discard(output)
+                self._commander.on_output(output)
                 if state == FOSCliState.UNKNOWN:
                     self._note_unknown_output()
-                output = b""
+                output = type(output)(b"")
             if state.value < FOSCliState.UNKNOWN.value:
                 self._idle_spins = 0
                 self._last_known_state = state
@@ -103,7 +102,10 @@ class FOSCliDriver:
         """
         if state == FOSCliState.CMD_PROMPT:
             self._handle_state(state)
-        self._commander.on_state(state, output)
+        if state == FOSCliState.CMD_PROMPT_ECHO:
+            self._commander.on_prompt_echo(output)
+        else:
+            self._commander.on_state(state, output)
         if state != FOSCliState.CMD_PROMPT:
             self._handle_state(state)
         if state == FOSCliState.CMD_PROMPT:
@@ -207,8 +209,9 @@ class FOSCliDriver:
     def set_prompt_patterns(self, name_pattern):
         if isinstance(name_pattern, str):
             name_pattern = re.escape(name_pattern.encode())
-        self._state_patterns[FOSCliState.PROVIDE_USERNAME.value] = rb"(?m)^\s*" + name_pattern + rb"\s+login:\s*$"
-        self._state_patterns[FOSCliState.CMD_PROMPT.value] = rb"(?m)^\s*" + name_pattern + PROMPT_CONTEXT_REGEX + rb"\s*[#$]\s*$"
+        self._state_patterns[FOSCliState.PROVIDE_USERNAME.value] = rb"(?m)^[ \t]*" + name_pattern + rb"[ \t]+login:[ \t]*"
+        self._state_patterns[FOSCliState.CMD_PROMPT.value] = rb"(?m)^[ \t]*" + name_pattern + PROMPT_CONTEXT_REGEX + rb"[ \t]*[#$][ \t]*$"
+        self._state_patterns[FOSCliState.CMD_PROMPT_ECHO.value] = rb"(?m)^[ \t]*" + name_pattern + PROMPT_CONTEXT_REGEX + rb"[ \t]*[#$][ \t]*[^\r\n]+(?:\r?\n)?"
 
     def _credential_rejected(self):
         # A rejected interaction cannot establish the newly selected
