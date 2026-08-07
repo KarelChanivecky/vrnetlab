@@ -15,6 +15,10 @@ class ConfigSaveFeature(Feature):
     BASELINE_PATH = "/tmp/initial.conf"
     CURRENT_PATH = "/config/current.conf"
     TRIGGER_PATH = "/get-config"
+    ASYNC_STATUS_PATTERNS = (
+        re.compile(r"System file integrity .*check failed!"),
+        re.compile(r"\*ATTENTION\*: License registration status changed.*"),
+    )
 
     def __init__(self, vm, commander, baseline_path=BASELINE_PATH,
                  current_path=CURRENT_PATH, trigger_path=TRIGGER_PATH):
@@ -79,12 +83,23 @@ class ConfigSaveFeature(Feature):
         config = config.replace("\r\n", "\n").replace("\r", "\n").replace("^H", "")
         config = re.sub(r"\x08+", "", config)
         config = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", config)
-        lines = [line for line in config.splitlines() if not line.strip().startswith("#")]
+        lines = [
+            line for line in config.splitlines()
+            if not ConfigSaveFeature._is_metadata_line(line)
+        ]
         if lines and lines[0].strip() == "show":
             lines = lines[1:]
         if lines and re.search(r"(?:\([^)]*\))?\s*[#$]\s*$", lines[-1]):
             lines.pop()
         return "\n".join(lines).strip()
+
+    @staticmethod
+    def _is_metadata_line(line):
+        stripped = line.strip()
+        return (
+            stripped.startswith("#")
+            or any(pattern.fullmatch(stripped) for pattern in ConfigSaveFeature.ASYNC_STATUS_PATTERNS)
+        )
 
     @staticmethod
     def write_config_file(path, content):
