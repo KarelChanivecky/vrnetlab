@@ -23,7 +23,7 @@ class Feature:
         commander.feature_complete(self)
 
     def on_output(self, commander, attempt, output):
-        pass
+        return False
 
     def on_command_result(self, commander, attempt, state, output):
         pass
