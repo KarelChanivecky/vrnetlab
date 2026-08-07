@@ -45,20 +45,20 @@ class ReconfigureMgmtNetwork(Feature):
         super().__init__(vm, commander, "management-after-license")
         self._network_blocks = ConfigureMgmtNetwork._blocks_for(vm)
 
-    def activate(self, commander):
+    def activate(self):
         if not os.path.exists("/tftpboot/appliance.lic") or self.vm.mgmt_address_ipv4 == "dhcp":
-            commander.feature_complete(self)
+            self.commander.feature_complete(self)
             return
-        self._submit_next_network_block(commander)
+        self._submit_next_network_block()
 
-    def _submit_next_network_block(self, commander):
+    def _submit_next_network_block(self):
         if self._network_blocks:
-            commander.submit_block(self, self._network_blocks.pop(0))
+            self.commander.submit_block(self, self._network_blocks.pop(0))
             return
-        commander.feature_complete(self)
+        self.commander.feature_complete(self)
 
-    def on_block_complete(self, commander):
-        self._submit_next_network_block(commander)
+    def on_block_complete(self):
+        self._submit_next_network_block()
 
 
 class MoveMgmtToVrf1(Feature):
@@ -75,36 +75,36 @@ class MoveMgmtToVrf1(Feature):
         self._vrf_unsupported = False
         self._route_fallback = False
 
-    def activate(self, commander):
+    def activate(self):
         if not os.path.exists("/tftpboot/appliance.lic") or self.vm.mgmt_address_ipv4 == "dhcp":
-            commander.feature_complete(self)
+            self.commander.feature_complete(self)
             return
-        commander.submit_block(self, ConfigBlock("system interface", [EditBlock("port1", [
-            CommandSpec("set vrf 1"),
+        self.commander.submit_block(self, ConfigBlock("system interface", [EditBlock("port1", [
+            CommandSpec("set vrf 1", capture_output=True),
         ])]))
 
-    def on_command_result(self, commander, attempt, state, output):
-        if attempt.spec.line == "set vrf 1" and re.search(
-            rb"(?mi)command (?:parse )?error|Command fail", output
+    def on_command_executed(self, command, state):
+        if command.spec.line == "set vrf 1" and re.search(
+            rb"(?mi)command (?:parse )?error|Command fail", bytes(command.output)
         ):
             self._vrf_unsupported = True
 
-    def on_block_complete(self, commander):
+    def on_block_complete(self):
         if self._phase == "interface":
             self._phase = "route"
             route = [CommandSpec("set vrf 1")]
             if self._vrf_unsupported:
                 self._route_fallback = True
                 route = [self._management_route_destination()]
-            commander.submit_block(self, ConfigBlock("router static", [EditBlock("9999", route)]))
+            self.commander.submit_block(self, ConfigBlock("router static", [EditBlock("9999", route)]))
             return
         if self._phase == "route" and self._vrf_unsupported and not self._route_fallback:
             self._phase = "fallback"
-            commander.submit_block(self, ConfigBlock("router static", [EditBlock("9999", [
+            self.commander.submit_block(self, ConfigBlock("router static", [EditBlock("9999", [
                 self._management_route_destination(),
             ])]))
             return
-        commander.feature_complete(self)
+        self.commander.feature_complete(self)
 
     def _management_route_destination(self):
         return CommandSpec(

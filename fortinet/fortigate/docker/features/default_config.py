@@ -13,6 +13,6 @@ class DefaultConfig(StaticFeature):
             CommandSpec(self._hostname_line),
         ])])
 
-    def on_command_result(self, commander, attempt, state, output):
-        if attempt.spec.line == self._hostname_line:
+    def on_command_executed(self, command, state):
+        if command.spec.line == self._hostname_line:
             self.vm.driver.set_prompt_patterns(self.vm.hostname)
