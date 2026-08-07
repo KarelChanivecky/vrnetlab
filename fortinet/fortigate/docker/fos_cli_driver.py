@@ -1,164 +1,235 @@
+import logging
+import re
 import time
 
-from common import FOSCliState, FOS_CLI_STATE_PATTERNS, Credentials, DEFAULT_USERNAME, DEF_POLICY_COMPLIANT_PASSWORD, \
-    DEFAULT_PASSWORD
-from fos_commander import FOSCommander
-from terminal import Terminal
+from common import (
+    FOSCliState,
+    FOS_CLI_STATE_PATTERNS,
+    BOOTSTRAP_HOSTNAME_REGEX,
+    PROMPT_CONTEXT_REGEX,
+    TRACE_LEVEL,
+)
+
+
+PROCESS_SPIN_SECONDS = 10
+EXPECT_TIMEOUT_SECONDS = 1
+UNKNOWN_STALL_SECONDS = 30
+UNKNOWN_STALL_NEWLINE_LIMIT = 3
 
 
 class FOSCliDriver:
-    """
-    Drives the CLI through boot, login, and ready-for-cmd states.
-    """
+    """Owns serial reads and delegates command dispatch to the commander."""
 
-    def __init__(self, terminal: Terminal, mgmt_passthrough, username, password, logger, mgmt_address_ipv4,
-                 mgmt_gw_ipv4, mgmt_address_ipv6, mgmt_gw_ipv6, hostname) -> None:
-        super().__init__()
-        self._idle_spins = 0
-        self._logger = logger
-        pwd = password
-        if pwd is None:  # emtpy string is falsy, so the or trick doesn't work.
-            pwd = DEFAULT_PASSWORD
-        self._desired_credentials = Credentials(username or DEFAULT_USERNAME, pwd)
-        self._credentials = Credentials(DEFAULT_USERNAME, DEF_POLICY_COMPLIANT_PASSWORD)
-        self._username = DEFAULT_USERNAME
+    def __init__(
+        self,
+        terminal,
+        commander,
+        credentials,
+        logger,
+        bootstrap_password,
+        activate_blank_credentials,
+        activate_bootstrap_credentials,
+    ):
         self._terminal = terminal
-        self._mgmt_passthrough = mgmt_passthrough
+        self._commander = commander
+        self._logger = logger
+        self._state_patterns = FOS_CLI_STATE_PATTERNS.copy()
+        self._last_known_state = FOSCliState.UNKNOWN
+        self._last_logged_state = None
+        self._idle_spins = 0
+        self._credentials = credentials
+        self._bootstrap_password = bootstrap_password
+        self._activate_blank_credentials = activate_blank_credentials
+        self._activate_bootstrap_credentials = activate_bootstrap_credentials
+        self._blank_fallback_available = True
+        self._send_blank_password = False
+        self._initial_login_complete = False
+        self._pending_bootstrap_activation = False
+        self._unknown_started_at = None
+        self._unknown_newlines = 0
         self._state_handlers = {
             FOSCliState.PROVIDE_USERNAME: self._provide_username,
             FOSCliState.PROVIDE_PASSWORD: self._provide_password,
-            FOSCliState.CHANGE_PASSWORD: self._change_password,
-            FOSCliState.CREDENTIAL_REJECTED: self._credential_rejected,
+            FOSCliState.CURRENT_PASSWORD: self._provide_current_password,
+            FOSCliState.CHANGE_PASSWORD: self._provide_new_password,
+            FOSCliState.CHANGE_PASSWORD_CONFIRM: self._confirm_new_password,
+            FOSCliState.MORE_PROMPT: self._continue_pager,
             FOSCliState.CREDENTIAL_ACCEPTED: self._credential_accepted,
-            FOSCliState.LIC_FAIL: self._license_fail,
-            FOSCliState.CMD_PROMPT: self._cmd_prompt,
-            FOSCliState.SHUTTING_DOWN: self._shutting_down,
-            FOSCliState.REBOOTING: self._rebooting,
-            FOSCliState.UNKNOWN: self._unknown_state,
-            FOSCliState.TN_TIMEOUT: self._tn_timeout,
+            FOSCliState.CMD_PROMPT: self._command_prompt,
+            FOSCliState.CREDENTIAL_REJECTED: self._credential_rejected,
+            FOSCliState.LIC_FAIL: self._license_failed,
+            FOSCliState.TN_TIMEOUT: self._timeout,
+            FOSCliState.UNKNOWN: self._unknown,
         }
 
-        self._state_patterns = FOS_CLI_STATE_PATTERNS.copy()
-        self._last_output = b""
-        self._last_known_state = FOSCliState.UNKNOWN
-        self._commander = FOSCommander(
-            terminal=terminal,
-            logger=logger,
-            mgmt_address_ipv4=mgmt_address_ipv4,
-            mgmt_gw_ipv4=mgmt_gw_ipv4,
-            mgmt_address_ipv6=mgmt_address_ipv6,
-            mgmt_gw_ipv6=mgmt_gw_ipv6,
-            mgmt_passthrough=mgmt_passthrough,
-            hostname=hostname,
-            state_patterns=self._state_patterns,
-            credentials=self._credentials,
-            desired_credentials=self._desired_credentials,
-        )
-
-        self._tried_v7_default_password = False
-        self._cred_rejected = False
-
-    def process_state(self):
-        spin_start = time.time()
-        while not self.ready and time.time() < spin_start + 5:
-            if self._idle_spins > 300:
-                # too many spins without appropriate communication
-                self._logger.warning("no output from serial console, restarting VCP")
-                self._idle_spins = 0
-                raise RuntimeError("VM node malfunction")
-            cur_state = self._next_state()
-
-            # The FSM is actually moving along
-            if cur_state.value < FOSCliState.UNKNOWN.value:
-                self._idle_spins = 0
-                self._last_known_state = cur_state
-
-            # Continue to show current state while reducing verbosity
-            if cur_state != FOSCliState.UNKNOWN and cur_state != FOSCliState.TN_TIMEOUT:
-                self._logger.debug(f"ST: {cur_state.name}")
-
-            self._commander.cli_state_seen(cur_state)
-            self._state_handlers[cur_state]()
-            if self.ready:
-                return
-
-    def _next_state(self):
-        ridx, match, res = self._terminal.expect(self._state_patterns, 1)
-        self._last_output = res
-        if match:
-            return FOSCliState(ridx)
-        if res == b"":
-            return FOSCliState.TN_TIMEOUT
-        return FOSCliState.UNKNOWN
-
-    def _provide_username(self):
-        self._terminal.wait_write(self._credentials.username, wait=None)
-
-    def _provide_password(self):
-        if self._cred_rejected:
-            self._tried_v7_default_password = True
-            self._terminal.wait_write("", wait=None)
-            return
-        self._terminal.wait_write(self._credentials.password, wait=None)
-
-    def _change_password(self):
-        # At this time, this would be the default password.
-        self._terminal.wait_write(self._credentials.password, wait=None)
-        self._terminal.wait_write(self._credentials.password, wait="Confirm Password")
-        # FOS 7.4 needs log out before you can use the password with ssh
-        self._commander.logout()
-
-    def save_config(self):
-        self._commander.save_config()
-        self._reactivate()
-
-    def _reactivate(self):
-        self._last_known_state = FOSCliState.UNKNOWN
+    @property
+    def state_patterns(self):
+        return self._state_patterns
 
     @property
     def ready(self):
         return self._commander.ready
 
-    def _credential_accepted(self):
-        self._cred_rejected = False
-        self._tried_v7_default_password = False
+    def process_state(self):
+        spin_start = time.time()
+        while not self.ready and time.time() < spin_start + PROCESS_SPIN_SECONDS:
+            state, output, matched = self._next_state()
+            if output and not matched:
+                self._commander.on_output(output)
+                if state == FOSCliState.UNKNOWN:
+                    self._note_unknown_output()
+            if state.value < FOSCliState.UNKNOWN.value:
+                self._idle_spins = 0
+                self._last_known_state = state
+                self._clear_unknown_stall()
+                self._log_state(state)
+            self._process_state(state, output)
 
-    def _cmd_prompt(self):
-        self._commander.run_cmd()
-
-    def _shutting_down(self):
-        pass
-
-    def _rebooting(self):
-        pass
-
-    def _credential_rejected(self):
-        if not self._tried_v7_default_password:
-            self._logger.debug("Credential rejected. Possibly never configured. Trying default password next time.")
-            self._cred_rejected = True
+    def _log_state(self, state):
+        if state == FOSCliState.CMD_PROMPT and self._last_logged_state == state:
             return
-        additional_info = ""
-        if b"pasword policy" in self._last_output:
-            additional_info = "Min password policy not met. Check the logs for the password policy"
-        self._logger.error(f"Credential rejected. {additional_info}")
+        self._last_logged_state = state
+        self._logger.debug(f"ST: {state.name}")
 
-        raise RuntimeError("Credential rejected")
+    def _process_state(self, state, output):
+        """Handle a CLI state and then let the commander observe it.
 
-    def _license_fail(self):
-        self._logger.error("Failed to setup license.")
+        A password confirmation can be followed immediately by a command
+        prompt, without ``Welcome!``.  Apply that credential transition
+        before the commander dispatches the command associated with the
+        prompt.
+        """
+        if state == FOSCliState.CMD_PROMPT:
+            self._handle_state(state)
+        self._commander.on_state(state, output)
+        if state != FOSCliState.CMD_PROMPT:
+            self._handle_state(state)
+        if state == FOSCliState.CMD_PROMPT:
+            self._commander.tick()
+        elif state == FOSCliState.TN_TIMEOUT and self._last_known_state == FOSCliState.CMD_PROMPT:
+            self._commander.tick()
+            self._commander.on_idle_prompt()
+
+    def _next_state(self):
+        index, match, output = self._terminal.expect(self._state_patterns, EXPECT_TIMEOUT_SECONDS)
+        if match:
+            return FOSCliState(index), output, True
+        return (FOSCliState.TN_TIMEOUT if not output else FOSCliState.UNKNOWN), output, False
+
+    def _handle_state(self, state):
+        handler = self._state_handlers.get(state)
+        if handler:
+            try:
+                handler()
+            except Exception:
+                self._logger.exception("CLI state handler failed for %s", state.name)
+                raise
+
+    def _provide_username(self):
+        self._respond(FOSCliState.PROVIDE_USERNAME, self._credentials.username)
+
+    def _provide_password(self):
+        if self._send_blank_password:
+            # The fallback is consumed as soon as it is sent. A rejection of
+            # this attempt, or any later login rejection, is fatal.
+            self._send_blank_password = False
+            self._blank_fallback_available = False
+            self._activate_blank_credentials()
+            self._respond(FOSCliState.PROVIDE_PASSWORD, b"")
+            return
+        self._respond(FOSCliState.PROVIDE_PASSWORD, self._credentials.password)
+
+    def _provide_current_password(self):
+        self._respond(FOSCliState.CURRENT_PASSWORD, self._credentials.password)
+
+    def _provide_new_password(self):
+        self._respond(FOSCliState.CHANGE_PASSWORD, self._bootstrap_password)
+
+    def _confirm_new_password(self):
+        self._respond(FOSCliState.CHANGE_PASSWORD_CONFIRM, self._bootstrap_password)
+        # Do not update active credentials until FortiOS accepts the
+        # confirmation. A rejected confirmation leaves the active password
+        # unchanged so that subsequent prompts use the right value.
+        self._pending_bootstrap_activation = True
+
+    def _continue_pager(self):
+        self._terminal.write(b" ")
+
+    def _credential_accepted(self):
+        self._initial_login_complete = True
+        self._activate_pending_bootstrap_credentials()
+
+    def _command_prompt(self):
+        """Accept password confirmation on versions that skip ``Welcome!``."""
+        self._activate_pending_bootstrap_credentials()
+
+    def _activate_pending_bootstrap_credentials(self):
+        if self._pending_bootstrap_activation:
+            self._activate_bootstrap_credentials()
+            self._pending_bootstrap_activation = False
+
+    @staticmethod
+    def _license_failed():
         raise RuntimeError("License setup failed")
 
-    def _unknown_state(self):
-        # no match, if we saw some output from the router it's probably
-        # booting, so let's give it some more time
+    def _timeout(self):
+        self._idle_spins += 1
+        self._recover_unknown_stall()
+
+    def _unknown(self):
         if self._last_known_state == FOSCliState.REBOOTING:
             self._idle_spins += 1
-            # It could be that the FGT image was defective. In this case it has been observed that
-            # the FGT would endlessly reboot.
-        else:
-            self._idle_spins = 0
 
-    def _tn_timeout(self):
-        if self._last_known_state == FOSCliState.CMD_PROMPT:
-            self._commander.run_cmd()
-        self._idle_spins += 1
+    def _note_unknown_output(self):
+        self._unknown_started_at = time.monotonic()
+
+    def _recover_unknown_stall(self):
+        if self._unknown_started_at is None:
+            return
+        if time.monotonic() - self._unknown_started_at < UNKNOWN_STALL_SECONDS:
+            return
+        if self._unknown_newlines >= UNKNOWN_STALL_NEWLINE_LIMIT:
+            raise RuntimeError("CLI remained in unknown state")
+        self._unknown_newlines += 1
+        self._unknown_started_at = time.monotonic()
+        self._logger.warning(
+            "CLI stuck in unknown state; sending newline "
+            f"({self._unknown_newlines}/{UNKNOWN_STALL_NEWLINE_LIMIT})"
+        )
+        self._terminal.write(b"\r")
+
+    def _clear_unknown_stall(self):
+        self._unknown_started_at = None
+        self._unknown_newlines = 0
+
+    def set_license_prompt_patterns(self):
+        names = BOOTSTRAP_HOSTNAME_REGEX
+        self._state_patterns[FOSCliState.PROVIDE_USERNAME.value] = rb"(?m)^\s*" + names + rb"\s+login:\s*$"
+        self._state_patterns[FOSCliState.CMD_PROMPT.value] = rb"(?m)^\s*" + names + PROMPT_CONTEXT_REGEX + rb"\s*[#$]\s*"
+
+    def set_hostname_prompt_patterns(self, hostname):
+        name = re.escape(hostname.encode())
+        self._state_patterns[FOSCliState.PROVIDE_USERNAME.value] = rb"(?m)^\s*" + name + rb"\s+login:\s*$"
+        self._state_patterns[FOSCliState.CMD_PROMPT.value] = rb"(?m)^\s*" + name + PROMPT_CONTEXT_REGEX + rb"\s*[#$]\s*"
+
+    def _credential_rejected(self):
+        # A rejected interaction cannot establish the newly selected
+        # bootstrap password.  Do not activate it on a later unrelated
+        # acceptance or prompt.
+        self._pending_bootstrap_activation = False
+        if not self._initial_login_complete and self._blank_fallback_available:
+            self._send_blank_password = True
+            return
+        raise RuntimeError("Credential rejected")
+
+    def _respond(self, state, response):
+        """Write an interactive response to the CLI."""
+        if isinstance(response, str):
+            response = response.encode()
+        self._logger.log(
+            TRACE_LEVEL,
+            "Responding to CLI state %s with '%s'",
+            state.name,
+            response,
+        )
+        self._terminal.write(bytes(response) + b"\r")

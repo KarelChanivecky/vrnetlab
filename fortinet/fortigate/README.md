@@ -47,6 +47,13 @@ topology:
         password: admin
       env:
         CLAB_MGMT_PASSTHROUGH: "true"
+        FOS_DISK_SPECS: "10g,10g"
+        FOS_LICENSE_STATUS_TIMEOUT_SECONDS: "120"
+        FOS_LOG_LEVEL: "DEBUG"
+        FOS_MGMT_DNS_PRIMARY: "1.1.1.1"
+        FOS_MGMT_DNS_SECONDARY: "8.8.8.8"
+        FOS_NO_ENC_CONFIG: "false"
+        FOS_UUID: "6c6323d5-0713-58eb-9458-4f8803a2cd93"
 ```
 
 ### Node Options
@@ -75,10 +82,13 @@ applies the intended startup config.
 | --- | --- | --- | --- |
 | `CLAB_MGMT_PASSTHROUGH` | `true` | `true`, `false` | Selects management wiring. `true` uses tap/tc passthrough so the FortiGate management interface participates directly in the Containerlab management network. `false` uses a host-forwarded bridge inside the vrnetlab container. |
 | `FOS_DISK_SPECS` | unset | comma-separated `qemu-img create` sizes, for example `10g` or `10g,10g` | Adds extra virtio disks. One disk becomes the FortiGate log disk. Additional disks are formatted during bootstrap; the second disk is expected to become WAN optimization storage on FortiOS versions that support it. |
+| `FOS_DEBUG_FEATURE` | unset | feature name | Runs bootstrap only through the named feature, then skips later features. Public feature order: `disk-format`, `admin`, `management`, `bootstrap-dns`, `setup-license`, `default-config`, `management-after-license`, `license-validation`, `management-vrf`, `undo-bootstrap-dns`, `capture-config`, `startup-config`. |
+| `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` | `120` | seconds | Maximum time to poll `get system status` for license status to leave `Pending` after license installation. |
+| `FOS_LOG_LEVEL` | `DEBUG` | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or numeric Python log level | Sets launcher log verbosity. |
 | `FOS_MGMT_DNS_PRIMARY` | `1.1.1.1` | IPv4 address | Sets the primary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. |
 | `FOS_MGMT_DNS_SECONDARY` | `8.8.8.8` | IPv4 address | Sets the secondary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. The legacy misspelling `FOS_MGMG_DNS_SECONDARY` remains accepted. |
 | `FOS_NO_ENC_CONFIG` | `false` | `true`, `false` | When `true`, ignores ENC-only changes on entries that already exist in the baseline. New entries and entries with other changes retain their encrypted fields. |
-| `FORTIGATE_UUID` | random UUID | UUID string | Sets the QEMU VM UUID. If unset, a new UUID is generated for each launch. |
+| `FOS_UUID` | random UUID | UUID string | Sets the QEMU VM UUID. If unset, a new UUID is generated for each launch. |
 
 Containerlab also passes the usual vrnetlab launch arguments such as hostname,
 username, password, and connection mode. For manual runs these are available as
@@ -89,7 +99,6 @@ launcher arguments:
 --username
 --password
 --connection-mode
---trace
 ```
 
 ## Management Modes
@@ -221,8 +230,9 @@ when the status changes to `VALID`; the launcher handles re-login and continues
 bootstrap.
 
 After installation, the launcher polls `get system status` until the license
-field is no longer `Pending` or until the internal
-`FOS_LICENSE_STATUS_TIMEOUT_SECONDS` constant expires.
+field is no longer `Pending`. By default it waits up to 2 minutes. Set
+`FOS_LICENSE_STATUS_TIMEOUT_SECONDS` to override that timeout for shorter
+targeted runs.
 
 ## Extra Disks
 
@@ -254,6 +264,9 @@ current FortiOS config:
 docker exec clab-<lab>-<node> touch /get-config
 ```
 
+The launcher consumes the trigger file when it detects it. Creating the file
+requests a capture; later modification or deletion of that file does not.
+
 The launcher reconnects to the serial console, runs `show`, compares the result
 with the baseline captured before startup config application, and writes the
 changed config to:
@@ -263,8 +276,9 @@ changed config to:
 ```
 
 The serial connection is closed after capture so the console remains available
-for external use. If console pagination was enabled before capture, it is
-temporarily disabled and then restored.
+for external use. Capture requests standard console output from the launcher;
+when the VM originally used pagination, it is restored after capture and before
+the user startup configuration is applied.
 
 The comparison parses `config` and `edit` blocks into a tree. Unchanged entries
 are skipped. New entries are written completely, including encrypted fields.
@@ -293,12 +307,10 @@ User-visible behavior includes:
 - password-policy failure surfaced as a startup error
 - explicit failure if no `qcow2` image is present
 - full serial output logging at debug level
-- trace logging with `--trace`
 
 ## Tested Versions
 
-Commit `be1df131b2c000d1ffb79eb941ab8ce4eee07e31` introduced the FortiOS 8.0
-support and was tested with:
+Tested with:
 
 - FortiGate 8.0.0 build 0167 GA debug image
 - FortiGate 7.6.6 build 3652 GA debug image

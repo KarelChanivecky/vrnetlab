@@ -10,7 +10,24 @@ import uuid
 from contextlib import contextmanager
 
 import vrnetlab
+from common import Credentials, DEFAULT_PASSWORD, DEFAULT_USERNAME, DEF_POLICY_COMPLIANT_PASSWORD, TRACE_LEVEL
 from fos_cli_driver import FOSCliDriver
+from fos_commander import FOSCommander
+from features import (
+    CredentialsFeature,
+    ConfigureMgmtDns,
+    ConfigSaveFeature,
+    FormatDisks,
+    FeatureFileWatcher,
+    DefaultConfig,
+    ConfigureTestLicenseFortiGuard,
+    SetLicense,
+    WaitForLicenseValidation,
+    ConfigureMgmtNetwork,
+    ReconfigureMgmtNetwork,
+    MoveMgmtToVrf1,
+    ApplyStartupConfig,
+)
 from host_forwarded_bridge import HostForwardedBridge
 from net_mgmt_strategy import NetMgmtStrategy
 from passthrough_redirect import PassthroughRedirect
@@ -30,8 +47,18 @@ signal.signal(signal.SIGINT, handle_SIGTERM)
 signal.signal(signal.SIGTERM, handle_SIGTERM)
 signal.signal(signal.SIGCHLD, handle_SIGCHLD)
 
-TRACE_LEVEL_NUM = 9
-logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
+TRACE_LEVEL_NUM = TRACE_LEVEL
+logging.addLevelName(TRACE_LEVEL_NUM, "\x1b[1;35m\tTRACE\x1b[0m")
+LOG_LEVEL_NAMES = {
+    "TRACE": TRACE_LEVEL_NUM,
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARN": logging.WARN,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+    "FATAL": logging.FATAL,
+}
 
 
 def trace(self, message, *args, **kws):
@@ -45,7 +72,45 @@ MGMT_PASSTHROUGH_DEFAULT = True
 TFTP_PORT = 69
 TFTP_TID_RANGE = (52400, 52500)
 TFTP_DIRECTORY = "/tftpboot"
-GET_CONFIG_TRIGGER_FILE = "/get-config"
+
+
+def parse_log_level(value):
+    if value is None or str(value).strip() == "":
+        return logging.DEBUG
+    value = str(value).strip()
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    normalized = value.upper()
+    if normalized in LOG_LEVEL_NAMES:
+        return LOG_LEVEL_NAMES[normalized]
+    raise ValueError(
+        "Invalid FOS_LOG_LEVEL. Use TRACE, DEBUG, INFO, WARN, ERROR, "
+        "another Python logging level name, or a numeric level."
+    )
+
+
+def apply_debug_feature_cutoff(features, stop_feature, logger):
+    """Limit bootstrap features to those up to and including ``stop_feature``."""
+    if stop_feature is None or str(stop_feature).strip() == "":
+        return features
+
+    stop_feature = str(stop_feature).strip()
+    for index, feature in enumerate(features):
+        if feature.name == stop_feature:
+            selected = features[:index + 1]
+            skipped = features[index + 1:]
+            logger.warning(
+                "FOS_DEBUG_FEATURE=%s; stopping after feature %s. Skipping: %s",
+                stop_feature,
+                stop_feature,
+                ", ".join(feature.name for feature in skipped) or "(none)",
+            )
+            return selected
+
+    available = ", ".join(feature.name for feature in features)
+    raise ValueError(f"Unknown FOS_DEBUG_FEATURE '{stop_feature}'. Available features: {available}")
 
 
 class FortiOSConsole(vrnetlab._Console):
@@ -105,24 +170,58 @@ class FortiOS_vm(vrnetlab.VM):
         self.num_nics = 12
         self.nic_type = "virtio-net-pci"
         self.highest_port = 0
-        self.qemu_args.extend(["-uuid", os.getenv("FORTIGATE_UUID") or str(uuid.uuid4())])
+        self.qemu_args.extend(["-uuid", os.getenv("FOS_UUID") or str(uuid.uuid4())])
         self.spins = 0
         self.stopped = False
         self.waiting_for = False
         self._mgmt_net = mgmt_net
         self._mgmt_net.configure_vm_mgmt(self)
+        self.mgmt_dns_primary = os.getenv("FOS_MGMT_DNS_PRIMARY", "1.1.1.1")
+        self.mgmt_dns_secondary = os.getenv(
+            "FOS_MGMT_DNS_SECONDARY", os.getenv("FOS_MGMG_DNS_SECONDARY", "8.8.8.8")
+        )
         self.terminal = Terminal(self.tn, self.logger, default_wait=self.wait_pattern)
-        self.driver = FOSCliDriver(terminal=self.terminal,
-                                   mgmt_passthrough=self.mgmt_passthrough,
-                                   username=username,
-                                   password=password,
-                                   logger=logger,
-                                   mgmt_address_ipv4=self.mgmt_address_ipv4,
-                                   mgmt_gw_ipv4=self.mgmt_gw_ipv4,
-                                   mgmt_address_ipv6=self.mgmt_address_ipv6,
-                                   mgmt_gw_ipv6=self.mgmt_gw_ipv6,
-                                   hostname=hostname
-                                   )
+        desired_password = DEFAULT_PASSWORD if password is None else password
+        self._bootstrap_username = DEFAULT_USERNAME
+        self._bootstrap_password = DEF_POLICY_COMPLIANT_PASSWORD
+        self.credentials = Credentials(self._bootstrap_username, self._bootstrap_password)
+        self.desired_credentials = Credentials(username or DEFAULT_USERNAME, desired_password)
+        self.commander = FOSCommander(
+            terminal=self.terminal,
+            logger=logger,
+        )
+        self.driver = FOSCliDriver(
+            self.terminal,
+            self.commander,
+            self.credentials,
+            logger,
+            self._bootstrap_password,
+            self.activate_blank_credentials,
+            self.activate_bootstrap_credentials,
+        )
+        configure_dns = ConfigureMgmtDns(self, self.commander)
+        self._features = [
+            FormatDisks(self, self.commander),
+            CredentialsFeature(self, self.commander),
+            ConfigureMgmtNetwork(self, self.commander),
+            configure_dns,
+            ConfigureTestLicenseFortiGuard(self, self.commander),
+            SetLicense(self, self.commander),
+            DefaultConfig(self, self.commander),
+            ReconfigureMgmtNetwork(self, self.commander),
+            WaitForLicenseValidation(self, self.commander),
+            MoveMgmtToVrf1(self, self.commander),
+            configure_dns.undo(),
+            ConfigSaveFeature(self, self.commander),
+            ApplyStartupConfig(self, self.commander),
+        ]
+        self._features = apply_debug_feature_cutoff(
+            self._features,
+            os.getenv("FOS_DEBUG_FEATURE"),
+            self.logger,
+        )
+        self._file_watcher = FeatureFileWatcher(self._features, self.logger)
+        self.commander.start(self._features)
         # set up the extra empty disk image
         # for fortigate logs
         vrnetlab.run_command(
@@ -131,7 +230,6 @@ class FortiOS_vm(vrnetlab.VM):
 
         # Comma-separated list of disk sizes to install in the machine. as accepted by qemu-img create.
         disk_specs = os.getenv("FOS_DISK_SPECS", "").split(",")
-        index = 1
         if disk_specs[0] == '':
             self.logger.warn(
                 "No additional disks configured. Use FOS_DISK_SPECS to specify a comma-separated list of disk sizes")
@@ -170,26 +268,13 @@ class FortiOS_vm(vrnetlab.VM):
     def work(self):
         super().work()
         if self.running:
-            self._handle_get_config_trigger()
+            self._file_watcher.poll()
+            # Runtime features such as get-config share the event-driven CLI
+            # scheduler with bootstrap and must continue receiving serial work.
+            if not self.driver.ready:
+                self.bootstrap_spin()
 
-    def _handle_get_config_trigger(self):
-        if not os.path.exists(GET_CONFIG_TRIGGER_FILE):
-            return
-        try:
-            os.remove(GET_CONFIG_TRIGGER_FILE)
-        except Exception as exc:
-            self.logger.error(f"Failed to cleanup {GET_CONFIG_TRIGGER_FILE}: {exc}")
-
-        self.logger.debug("get-config")
-        self._serial_connect()
-        try:
-            self.driver.save_config()
-        except Exception:
-            self.stop()
-            raise
-        self.logger.debug("get-config done")
-
-    def _serial_connect(self):
+    def connect_serial_console(self):
         try:
             self.terminal.close()
         except Exception:
@@ -213,8 +298,26 @@ class FortiOS_vm(vrnetlab.VM):
         self.stopped = False
         self.terminal.write(b"\r")
 
+    def activate_desired_credentials(self):
+        self.credentials.username = self.desired_credentials.username
+        self.credentials.password = self.desired_credentials.password
+
+    def activate_bootstrap_credentials(self):
+        self.credentials.username = self._bootstrap_username
+        self.credentials.password = self._bootstrap_password
+
+    def activate_blank_credentials(self):
+        self.credentials.password = ""
+
     def gen_mgmt(self):
         return self._mgmt_net.gen_mgmt(self)
+
+    @staticmethod
+    def mgmt_gateway_destination(gateway, mgmt_address):
+        _address, separator, prefix = str(mgmt_address).partition("/")
+        if separator and prefix:
+            return f"{gateway}/{prefix}"
+        return f"{gateway}/{'128' if ':' in str(gateway) else '32'}"
 
     def stop(self):
         self.stopped = True
@@ -250,9 +353,7 @@ if __name__ == "__main__":
     logging.basicConfig(format=LOG_FORMAT)
     logger = logging.getLogger()
 
-    logger.setLevel(logging.DEBUG)
-    if args.trace:
-        logger.setLevel(1)
+    logger.setLevel(parse_log_level(os.getenv("FOS_LOG_LEVEL")))
 
     mgmt_passthrough = (
         os.environ.get("CLAB_MGMT_PASSTHROUGH", "").lower() == "true"

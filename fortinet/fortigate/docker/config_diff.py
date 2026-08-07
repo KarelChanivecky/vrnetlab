@@ -1,5 +1,6 @@
-"""Structural diff for FortiOS CLI configuration."""
+"""Capture, normalize, and structurally diff FortiOS CLI configuration."""
 
+import os
 import re
 from dataclasses import dataclass, field
 

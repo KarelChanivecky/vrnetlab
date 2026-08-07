@@ -1,6 +1,10 @@
+import cmd
+import logging
 import re
 import time
 from contextlib import contextmanager
+
+from common import TRACE_LEVEL
 
 
 class Terminal:
@@ -11,6 +15,8 @@ class Terminal:
         self._logger = logger
         self._default_wait = default_wait
         self._buffer = bytearray()
+        self._output_suppression_depth = 0
+        self._output_suppression_context = None
 
     def write(self, data):
         if isinstance(data, str):
@@ -69,6 +75,7 @@ class Terminal:
             if data:
                 self._buffer.extend(data)
                 received.extend(data)
+                self._logger.log(TRACE_LEVEL - 1, f"buffer: {self._buffer}")
                 result = self._match(regex_list)
                 continue
 
@@ -86,8 +93,19 @@ class Terminal:
 
     @contextmanager
     def suppress_output(self):
-        with self._connection.suppress_output():
+        if self._output_suppression_depth == 0:
+            self._output_suppression_context = self._connection.suppress_output()
+            self._output_suppression_context.__enter__()
+        self._output_suppression_depth += 1
+        try:
             yield
+        finally:
+            self._output_suppression_depth -= 1
+            if self._output_suppression_depth == 0:
+                try:
+                    self._output_suppression_context.__exit__(None, None, None)
+                finally:
+                    self._output_suppression_context = None
 
     def _match(self, regex_list):
         winner = None
