@@ -15,4 +15,4 @@ class DefaultConfig(StaticFeature):
 
     def on_command_result(self, commander, attempt, state, output):
         if attempt.spec.line == self._hostname_line:
-            self.vm.driver.set_hostname_prompt_patterns(self.vm.hostname)
+            self.vm.driver.set_prompt_patterns(self.vm.hostname)

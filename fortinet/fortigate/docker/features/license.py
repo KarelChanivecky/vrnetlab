@@ -5,7 +5,7 @@ import re
 import time
 
 from cli_commands import CommandSequence, CommandSpec, SessionLossAction
-from common import FOSCliState
+from common import BOOTSTRAP_HOSTNAME_REGEX, FOSCliState
 
 from .base import Feature
 
@@ -40,7 +40,7 @@ class SetLicense(Feature):
         if not self._enabled:
             commander.feature_complete(self)
             return
-        self.vm.driver.set_license_prompt_patterns()
+        self.vm.driver.set_prompt_patterns(BOOTSTRAP_HOSTNAME_REGEX)
         self._submit_restore(commander)
 
     def _submit_restore(self, commander):

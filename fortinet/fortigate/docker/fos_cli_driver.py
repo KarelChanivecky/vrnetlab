@@ -202,15 +202,11 @@ class FOSCliDriver:
         self._unknown_started_at = None
         self._unknown_newlines = 0
 
-    def set_license_prompt_patterns(self):
-        names = BOOTSTRAP_HOSTNAME_REGEX
-        self._state_patterns[FOSCliState.PROVIDE_USERNAME.value] = rb"(?m)^\s*" + names + rb"\s+login:\s*$"
-        self._state_patterns[FOSCliState.CMD_PROMPT.value] = rb"(?m)^\s*" + names + PROMPT_CONTEXT_REGEX + rb"\s*[#$]\s*"
-
-    def set_hostname_prompt_patterns(self, hostname):
-        name = re.escape(hostname.encode())
-        self._state_patterns[FOSCliState.PROVIDE_USERNAME.value] = rb"(?m)^\s*" + name + rb"\s+login:\s*$"
-        self._state_patterns[FOSCliState.CMD_PROMPT.value] = rb"(?m)^\s*" + name + PROMPT_CONTEXT_REGEX + rb"\s*[#$]\s*"
+    def set_prompt_patterns(self, name_pattern):
+        if isinstance(name_pattern, str):
+            name_pattern = re.escape(name_pattern.encode())
+        self._state_patterns[FOSCliState.PROVIDE_USERNAME.value] = rb"(?m)^\s*" + name_pattern + rb"\s+login:\s*$"
+        self._state_patterns[FOSCliState.CMD_PROMPT.value] = rb"(?m)^\s*" + name_pattern + PROMPT_CONTEXT_REGEX + rb"\s*[#$]\s*$"
 
     def _credential_rejected(self):
         # A rejected interaction cannot establish the newly selected
