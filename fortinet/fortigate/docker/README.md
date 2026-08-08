@@ -24,6 +24,16 @@ Important behavior:
 - `Terminal.expect()` keeps unmatched bytes in an internal buffer across calls.
   FortiOS prompts and banners often arrive fragmented, so callers must not
   assume one read equals one logical event.
+- A terminal-owned reader thread continuously drains the serial connection into
+  a byte-counted, thread-safe queue. `Terminal.expect()` reads from that queue
+  instead of making serial syscalls directly, so CLI state handling is not paced
+  by each console read attempt. The FortiOS scrapli console exposes a blocking
+  read for this thread; nonblocking eager reads remain only as a fallback for
+  simpler connection wrappers.
+- `Terminal.write()` queues bytes for a terminal-owned writer thread instead of
+  writing to the serial connection directly. The writer preserves write order
+  and sends one queued chunk at a time, so commander/driver state handling is
+  not paced by each scrapli write call.
 - `Terminal.expect()` returns a `Data` object, not raw bytes. `Data` is a byte
   view of what was just read or matched, and timeout `Data` can discard bytes
   from the terminal's retained buffer.
@@ -39,6 +49,9 @@ Important behavior:
   defaults to 1 MiB. If the buffer grows beyond that limit, bootstrap fails
   instead of truncating data, because oversized retained output means some layer
   failed to consume bytes it understood.
+- The same limit bounds unread data in the reader queue and unsent data in the
+  writer queue. When queued serial data reaches the limit, the reader or writer
+  thread waits until the corresponding consumer drains queue bytes.
 - `suppress_output()` temporarily prevents machine-readable commands such as
   `show` and `get system status` from being mirrored to the visible serial log,
   while still keeping their output available to the parser.

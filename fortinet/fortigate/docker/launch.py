@@ -134,6 +134,9 @@ class FortiOSConsole(vrnetlab._Console):
                 return b""
         return self._read()
 
+    def read_blocking(self):
+        return self._read()
+
     @contextmanager
     def suppress_output(self):
         output_enabled = self._output_enabled
