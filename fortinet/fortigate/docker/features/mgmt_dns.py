@@ -32,9 +32,9 @@ class ConfigureMgmtDns(Feature):
         if self._phase == "inspect":
             self._phase = "apply"
             self.commander.submit_block(self, ConfigBlock("system dns", [
-                CommandSpec("set protocol cleartext"),
-                CommandSpec(f"set primary {self.vm.mgmt_dns_primary}"),
-                CommandSpec(f"set secondary {self.vm.mgmt_dns_secondary}"),
+                "set protocol cleartext",
+                f"set primary {self.vm.mgmt_dns_primary}",
+                f"set secondary {self.vm.mgmt_dns_secondary}",
             ]))
             return
         self.commander.feature_complete(self)
@@ -46,11 +46,11 @@ class ConfigureMgmtDns(Feature):
 
     def reversal_blocks(self):
         protocol_restore = (
-            CommandSpec(f"set protocol {self._previous_protocol}")
-            if self._previous_protocol else CommandSpec("unset protocol")
+            f"set protocol {self._previous_protocol}"
+            if self._previous_protocol else "unset protocol"
         )
         return [ConfigBlock("system dns", [
             protocol_restore,
-            CommandSpec("unset primary"),
-            CommandSpec("unset secondary"),
+            "unset primary",
+            "unset secondary",
         ])]

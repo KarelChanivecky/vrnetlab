@@ -94,7 +94,16 @@ class WaitForLicenseValidation(Feature):
         self._deadline = None
         self._next_poll = None
         self._phase = "idle"
+        self._status = None
         self._standard_output_active = False
+
+    @property
+    def status(self):
+        return self._status
+
+    @property
+    def valid(self):
+        return self._status is not None and self._status.lower() == "valid"
 
     def activate(self):
         if not self._enabled:
@@ -106,11 +115,13 @@ class WaitForLicenseValidation(Feature):
 
     def on_command_executed(self, command, state):
         status = self._license_status(bytes(command.output))
-        if status and status.lower() != "pending":
-            self._logger.info(f"License status changed to {status}")
-            self._phase = "done"
-        else:
+        if not status or status.lower() == "pending":
+            self._status = status
             self._next_poll = time.monotonic() + LICENSE_STATUS_POLL_INTERVAL_SECONDS
+            return
+        self._status = status
+        self._logger.info(f"License status changed to {status}")
+        self._phase = "done"
 
     @staticmethod
     def _license_status(output):

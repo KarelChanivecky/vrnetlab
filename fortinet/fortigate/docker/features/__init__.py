@@ -10,7 +10,6 @@ from .default_config import DefaultConfig
 from .license import SetLicense, WaitForLicenseValidation
 from .mgmt_net import ConfigureMgmtNetwork, ReconfigureMgmtNetwork, MoveMgmtToVrf1
 from .startup_config import ApplyStartupConfig, parse_startup_config
-from .fortiguard_hooks import ConfigureFortiGuardHooks, fortiguard_hooks_enabled
 
 __all__ = [
     "CredentialsFeature",
@@ -23,11 +22,9 @@ __all__ = [
     "SetLicense",
     "WaitForLicenseValidation",
     "ConfigureMgmtNetwork",
-    "ConfigureFortiGuardHooks",
     "ReconfigureMgmtNetwork",
     "MoveMgmtToVrf1",
     "StaticFeature",
     "ApplyStartupConfig",
     "parse_startup_config",
-    "fortiguard_hooks_enabled",
 ]

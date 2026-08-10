@@ -19,21 +19,21 @@ class ConfigureMgmtNetwork(StaticFeature):
         if vm.mgmt_address_ipv4 == "dhcp":
             return []
         port_children = [
-            CommandSpec("set mode static"),
-            CommandSpec(f"set ip {vm.mgmt_address_ipv4}"),
-            CommandSpec("set allowaccess ping https ssh http"),
+            "set mode static",
+            f"set ip {vm.mgmt_address_ipv4}",
+            "set allowaccess ping https ssh http",
         ]
         if vm.mgmt_address_ipv6:
             port_children.append(ConfigBlock("ipv6", [
-                CommandSpec("set ip6-mode static"),
-                CommandSpec(f"set ip6-address {vm.mgmt_address_ipv6}"),
-                CommandSpec("set ip6-allowaccess ping https ssh http"),
+                "set ip6-mode static",
+                f"set ip6-address {vm.mgmt_address_ipv6}",
+                "set ip6-allowaccess ping https ssh http",
             ]))
         return [
             ConfigBlock("system interface", [EditBlock("port1", port_children)]),
             ConfigBlock("router static", [EditBlock("9999", [
-                CommandSpec(f"set gateway {vm.mgmt_gw_ipv4}"),
-                CommandSpec("set device port1"),
+                f"set gateway {vm.mgmt_gw_ipv4}",
+                "set device port1",
             ])]),
         ]
 
@@ -92,7 +92,7 @@ class MoveMgmtToVrf1(Feature):
     def on_block_complete(self):
         if self._phase == "interface":
             self._phase = "route"
-            route = [CommandSpec("set vrf 1")]
+            route = ["set vrf 1"]
             if self._vrf_unsupported:
                 self._route_fallback = True
                 route = [self._management_route_destination()]
@@ -104,9 +104,20 @@ class MoveMgmtToVrf1(Feature):
                 self._management_route_destination(),
             ])]))
             return
+        if self._phase == "fallback":
+            self._phase = "fortiguard"
+            self.commander.submit_block(self, ConfigBlock("system fortiguard",
+                                                          [
+                                                              EditBlock("9999", [
+                                                                  "set vrf-select 1"
+                                                              ])
+                                                          ]))
+            return
         self.commander.feature_complete(self)
 
     def _management_route_destination(self):
-        return CommandSpec(
-            f"set dst {self.vm.mgmt_gateway_destination(self.vm.mgmt_gw_ipv4, self.vm.mgmt_address_ipv4)}",
+        destination = self.vm.mgmt_gateway_destination(
+            self.vm.mgmt_gw_ipv4,
+            self.vm.mgmt_address_ipv4,
         )
+        return f"set dst {destination}"

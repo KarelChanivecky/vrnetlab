@@ -12,7 +12,7 @@ class CredentialsFeature(StaticFeature):
         self._activate_after_admin_commit = False
         self._desired_credentials_activated = False
         credentials = vm.desired_credentials
-        admin_children = [CommandSpec("set accprofile super_admin")]
+        admin_children = ["set accprofile super_admin"]
         if credentials.password:
             admin_children.append(CommandSpec(
                 f"set password {credentials.password}",
@@ -23,7 +23,7 @@ class CredentialsFeature(StaticFeature):
                 "unset password", session_loss=SessionLossAction.CONTINUE,
             ))
         super().__init__(vm, commander, "admin", [
-            ConfigBlock("system password-policy", [CommandSpec("set status disable")]),
+            ConfigBlock("system password-policy", ["set status disable"]),
             ConfigBlock("system admin", [EditBlock(credentials.username, admin_children)]),
         ], on_complete=lambda: self._activate_desired_credentials())
 
