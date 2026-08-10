@@ -101,6 +101,10 @@ Commands are represented by:
 - `EditBlock`: emits `edit <name>`, child commands, and `next`
 - `CommandSequence`: emits child commands without config framing
 
+Plain string commands are automatically wrapped in a default `CommandSpec`
+when submitted directly or used inside any command container. Use an explicit
+`CommandSpec` only when a command needs non-default execution flags.
+
 `CommandSpec` intentionally has no separate name field. The command line is the
 identity, and feature state machines track phase when they need context.
 
@@ -227,6 +231,8 @@ Current bootstrap stages are:
 - `management-vrf`: moves management into VRF 1 when supported, or narrows
   the management route on FortiProxy
 - `undo-bootstrap-dns`: removes the temporary bootstrap DNS settings
+- `fortitoken-provisioning`: after a license becomes `VALID`, polls for
+  license-provisioned FortiTokens for up to 15 seconds
 - `capture-config`: records a clean baseline and later services `/get-config`
   runtime captures
 - `startup-config`: imports the user-supplied startup config

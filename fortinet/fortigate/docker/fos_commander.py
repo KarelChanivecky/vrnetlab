@@ -6,7 +6,15 @@ from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass
 
-from cli_commands import CleanupAction, CommandAttempt, CommandSequence, CommandSpec, ConfigBlock, SessionLossAction
+from cli_commands import (
+    CleanupAction,
+    CommandAttempt,
+    CommandSequence,
+    CommandSpec,
+    ConfigBlock,
+    SessionLossAction,
+    flatten_commands,
+)
 from terminal import Data
 from common import FOSCliState, TRACE_LEVEL
 
@@ -34,7 +42,7 @@ class FOSCommander:
         self.logger = logger
         self._features = deque()
         self._active_feature = None
-        self._active_block = None
+        self._active_commands = ()
         self._pending = deque()
         self._inflight = None
         self._attempt_number = 0
@@ -70,8 +78,9 @@ class FOSCommander:
             raise RuntimeError("Inactive feature attempted to submit commands")
         if self.busy:
             raise RuntimeError("Cannot replace an active command block")
-        self._active_block = block
-        self._pending = deque(block.flatten())
+        commands = tuple(flatten_commands(block))
+        self._active_commands = commands
+        self._pending = deque(commands)
 
     def feature_complete(self, feature):
         if feature is not self._active_feature:
@@ -84,7 +93,7 @@ class FOSCommander:
         self._finish_standard_output_context(feature)
         self._schedule_feature_cleanup(feature, "completion")
         self._active_feature = None
-        self._active_block = None
+        self._active_commands = ()
         if not self._cleanup:
             self._activate_next_feature()
 
@@ -253,7 +262,7 @@ class FOSCommander:
                 return
             context.phase = "set-standard"
             self.submit_block(context.feature, ConfigBlock("system console", [
-                CommandSpec(self._CONSOLE_STANDARD_LINE),
+                self._CONSOLE_STANDARD_LINE,
             ]))
             return
         if context.phase == "set-standard":
@@ -271,7 +280,7 @@ class FOSCommander:
         self._standard_output_context = None
         if context.restore:
             self._cleanup.extend(ConfigBlock("system console", [
-                CommandSpec("set output more"),
+                "set output more",
             ]).flatten())
 
     def _handle_session_loss(self):
@@ -302,7 +311,7 @@ class FOSCommander:
         action_handlers[action]()
 
     def _restart_active_block(self):
-        self._pending = deque(self._active_block.flatten())
+        self._pending = deque(self._active_commands)
 
     @staticmethod
     def _raise_session_loss(attempt):

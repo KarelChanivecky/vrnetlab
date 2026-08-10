@@ -44,6 +44,16 @@ def literal_line(line):
     return re.sub(r"[ \t]+", " ", line).strip()
 
 
+def _prune_empty_config_blocks(node):
+    children = []
+    for child in node.children:
+        _prune_empty_config_blocks(child)
+        if child.kind == "config" and not child.children:
+            continue
+        children.append(child)
+    node.children = children
+
+
 def parse_config(config):
     root = ConfigNode("", "", "root")
     stack = [root]
@@ -68,6 +78,7 @@ def parse_config(config):
         stack[-1].children.append(node)
         if node.is_block:
             stack.append(node)
+    _prune_empty_config_blocks(root)
     return root
 
 

@@ -66,7 +66,7 @@ class Scope:
     def flatten(self):
         commands = [CommandSpec(self.open_line)]
         for child in self.children:
-            commands.extend(child.flatten() if isinstance(child, Scope) else [child])
+            commands.extend(flatten_commands(child))
         commands.append(CommandSpec(self.close_line))
         return commands
 
@@ -101,8 +101,21 @@ class CommandSequence:
     def flatten(self):
         commands = []
         for child in self.children:
-            commands.extend(child.flatten() if isinstance(child, Scope) else [child])
+            commands.extend(flatten_commands(child))
         return commands
+
+
+def flatten_commands(value):
+    """Flatten command containers and wrap plain CLI lines with defaults."""
+    if isinstance(value, str):
+        return [CommandSpec(value)]
+    if isinstance(value, CommandSpec):
+        return [value]
+    if isinstance(value, (Scope, CommandSequence)):
+        return value.flatten()
+    raise TypeError(
+        "Commands must be strings, CommandSpec instances, or command containers"
+    )
 
 
 @dataclass(frozen=True)

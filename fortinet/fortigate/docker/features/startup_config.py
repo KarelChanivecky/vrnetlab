@@ -2,7 +2,7 @@
 
 import os
 
-from cli_commands import ConfigBlock, EditBlock, CommandSpec
+from cli_commands import ConfigBlock, EditBlock
 from .base import StaticFeature
 
 
@@ -42,7 +42,7 @@ def parse_startup_config(path):
             else:
                 if not stack:
                     raise ValueError("Startup config malformed. command outside config scope.")
-                stack[-1].children.append(CommandSpec(line))
+                stack[-1].children.append(line)
     if stack:
         raise ValueError("Startup config malformed. unmatched config or edit scope.")
     return roots
