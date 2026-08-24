@@ -14,8 +14,7 @@ class DefaultConfig(StaticFeature):
                 self._hostname_line,
             ]),
             ConfigBlock("system fortiguard", [
-                "set interface-select-method specify",
-                "set interface port1",
+                "set auto-join-forticloud disable",
             ])
         ])
 
