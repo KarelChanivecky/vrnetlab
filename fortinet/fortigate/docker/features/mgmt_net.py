@@ -104,15 +104,6 @@ class MoveMgmtToVrf1(Feature):
                 self._management_route_destination(),
             ])]))
             return
-        if self._phase == "fallback":
-            self._phase = "fortiguard"
-            self.commander.submit_block(self, ConfigBlock("system fortiguard",
-                                                          [
-                                                              EditBlock("9999", [
-                                                                  "set vrf-select 1"
-                                                              ])
-                                                          ]))
-            return
         self.commander.feature_complete(self)
 
     def _management_route_destination(self):
