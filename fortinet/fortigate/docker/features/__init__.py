@@ -10,6 +10,7 @@ from .default_config import DefaultConfig
 from .license import SetLicense, WaitForLicenseValidation
 from .mgmt_net import ConfigureMgmtNetwork, ReconfigureMgmtNetwork, MoveMgmtToVrf1
 from .startup_config import ApplyStartupConfig, parse_startup_config
+from .tst_license import ConfigureTestLicenseFortiGuard, tst_license_enabled
 
 __all__ = [
     "CredentialsFeature",
@@ -22,9 +23,13 @@ __all__ = [
     "SetLicense",
     "WaitForLicenseValidation",
     "ConfigureMgmtNetwork",
+    "ConfigureTestLicenseFortiGuard",
     "ReconfigureMgmtNetwork",
     "MoveMgmtToVrf1",
     "StaticFeature",
     "ApplyStartupConfig",
     "parse_startup_config",
+    "tst_license_enabled",
 ]
+
+from .tst_license import ConfigureTestLicenseFortiGuard
