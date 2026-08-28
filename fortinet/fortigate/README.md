@@ -53,6 +53,7 @@ topology:
         FOS_MGMT_DNS_PRIMARY: "1.1.1.1"
         FOS_MGMT_DNS_SECONDARY: "8.8.8.8"
         FOS_NO_ENC_CONFIG: "false"
+        FOS_ONBOARDING: "false"
         FOS_UUID: "6c6323d5-0713-58eb-9458-4f8803a2cd93"
 ```
 
@@ -88,6 +89,7 @@ applies the intended startup config.
 | `FOS_MGMT_DNS_PRIMARY` | `1.1.1.1` | IPv4 address | Sets the primary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. |
 | `FOS_MGMT_DNS_SECONDARY` | `8.8.8.8` | IPv4 address | Sets the secondary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. The legacy misspelling `FOS_MGMG_DNS_SECONDARY` remains accepted. |
 | `FOS_NO_ENC_CONFIG` | `false` | `true`, `false` | When `true`, ignores ENC-only changes on entries that already exist in the baseline. New entries and entries with other changes retain their encrypted fields. |
+| `FOS_ONBOARDING` | `false` | `true`, `false` | When `true`, disables the HTTPS redirect and automatic-upgrade setup warning in the default FortiOS GUI configuration. |
 | `FOS_UUID` | random UUID | UUID string | Sets the QEMU VM UUID. If unset, a new UUID is generated for each launch. |
 
 Containerlab also passes the usual vrnetlab launch arguments such as hostname,
@@ -189,6 +191,8 @@ end
 
 config system global
     set admin-scp enable
+    set admin-https-redirect disable             # when FOS_ONBOARDING=true
+    set gui-auto-upgrade-setup-warning disable   # when FOS_ONBOARDING=true
     set hostname <node-name>
 end
 
