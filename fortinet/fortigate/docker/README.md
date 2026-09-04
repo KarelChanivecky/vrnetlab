@@ -248,6 +248,9 @@ Current bootstrap stages are:
   license-provisioned FortiTokens for up to 15 seconds
 - `capture-config`: records a clean baseline and later services `/get-config`
   runtime captures
+- `pki-certificates`: imports CA/remote certificates over TFTP, types local
+  certificate PEM pairs into `config vpn certificate local`, and installs CRL
+  bodies — all from `FOS_PKI_*` environment variables that carry paths only
 - `startup-config`: imports the user-supplied startup config
 
 `FeatureFileWatcher` polls watched feature paths after bootstrap. Today the
