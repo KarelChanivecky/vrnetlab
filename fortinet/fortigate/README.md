@@ -90,11 +90,11 @@ applies the intended startup config.
 | `FOS_MGMT_DNS_SECONDARY` | `8.8.8.8` | IPv4 address | Sets the secondary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. The legacy misspelling `FOS_MGMG_DNS_SECONDARY` remains accepted. |
 | `FOS_NO_ENC_CONFIG` | `false` | `true`, `false` | When `true`, ignores ENC-only changes on entries that already exist in the baseline. New entries and entries with other changes retain their encrypted fields. |
 | `FOS_ONBOARDING` | `false` | `true`, `false` | When `true`, disables the HTTPS redirect and automatic-upgrade setup warning in the default FortiOS GUI configuration. |
-| `FOS_PKI_CA_CERTS` | unset | semicolon-separated `[refname:]path` PEM entries | Trusts CA certificates. Each file is staged under `/tftpboot/pki/` and imported with `execute vpn certificate ca import tftp`; the FortiOS object is named after the certificate CN. |
-| `FOS_PKI_LOCAL_CERTS` | unset | semicolon-separated `[refname:]key_path:cert_path` or `[refname:]cert_path` entries | Installs local certificates, including the SSL deep-inspection CA pair, by typing the PEM contents into `config vpn certificate local`. The object is named after the refname when given, otherwise the certificate CN. A CN-implied pair must be spelled `:key_path:cert_path`; paths containing `:` must carry a refname. |
+| `FOS_PKI_CA_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Trusts CA certificates. Each file is staged under `/tftpboot/pki/` and imported with `execute vpn certificate ca import tftp`; the FortiOS object is named after the certificate CN. |
+| `FOS_PKI_LOCAL_CERTS` | unset | semicolon-separated `refname:key_path:cert_path` or `refname:cert_path` entries | Installs local certificates, including the SSL deep-inspection CA pair, by typing the PEM contents into `config vpn certificate local`. The object is named after the refname when given, otherwise the certificate CN. Every entry starts with the refname field; use an empty field (`:key_path:cert_path`, `:cert_path`) to imply the name. |
 | `FOS_PKI_LOCAL_CERT_PASS_FILES` | unset | semicolon-separated file paths | Optional password files whose contents are typed as `set password` for encrypted private keys, paired positionally with keyed `FOS_PKI_LOCAL_CERTS` entries. |
-| `FOS_PKI_REMOTE_CERTS` | unset | semicolon-separated `[refname:]path` PEM entries | Imports remote peer certificates. Each file is staged under `/tftpboot/pki/` and imported with `execute vpn certificate remote import tftp`; the FortiOS object is named after the certificate CN. |
-| `FOS_PKI_CRLS` | unset | semicolon-separated `[refname:]path` CRL entries | Installs CRLs as base64 bodies in `config vpn certificate crl` (or `config certificate crl` on older releases; detected from `get system status`). The object is named after the refname when given, otherwise the file basename. |
+| `FOS_PKI_REMOTE_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Imports remote peer certificates. Each file is staged under `/tftpboot/pki/` and imported with `execute vpn certificate remote import tftp`; the FortiOS object is named after the certificate CN. |
+| `FOS_PKI_CRLS` | unset | semicolon-separated `refname:path` CRL entries | Installs CRLs as base64 bodies in `config vpn certificate crl` (or `config certificate crl` on older releases; detected from `get system status`). The object is named after the refname when given, otherwise the file basename. |
 | `FOS_UUID` | random UUID | UUID string | Sets the QEMU VM UUID. If unset, a new UUID is generated for each launch. |
 
 Containerlab also passes the usual vrnetlab launch arguments such as hostname,
@@ -259,11 +259,11 @@ envs:
   FOS_PKI_CRLS: "issuer:/lab/issuer.crl"
 ```
 
-Entries are `;`-separated. A leading `refname:` names the FortiOS object;
-without it the name is implied — the certificate CN for certificates, the
-file basename for CRLs. A CN-implied `key_path:cert_path` pair must be
-spelled `:key_path:cert_path` (leading colon), and paths containing `:`
-must carry a refname.
+Entries are `;`-separated and always start with a refname field followed
+by `:` (`refname:rest`). The refname names the FortiOS object; an empty
+refname field implies the name — the certificate CN for certificates, the
+file basename for CRLs. A bare `key_path:cert_path` without the leading
+field is rejected, since it cannot be told apart from `refname:cert_path`.
 
 - `FOS_PKI_CA_CERTS` and `FOS_PKI_REMOTE_CERTS` files are imported over TFTP
   with `execute vpn certificate ... import tftp`; FortiOS names those objects
