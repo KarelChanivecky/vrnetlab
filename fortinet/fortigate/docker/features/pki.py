@@ -5,20 +5,28 @@ certificates, and certificate revocation lists at bootstrap. Env variables
 carry paths only; this feature reads the file contents and never logs or
 stores the certificate, key, or password bytes themselves.
 
+Entries are ``;``-separated and may carry a leading reference name that
+becomes the FortiOS object name (``refname:``); when the refname is omitted,
+the object is named after the certificate CN. Path values containing ``:``
+must therefore carry a refname.
+
 Env variables:
 
-- ``FOS_PKI_CA_CERTS``: ``path;path;...`` — CAs imported with
-  ``execute vpn certificate ca import tftp`` and named by their CN.
-- ``FOS_PKI_LOCAL_CERTS``: ``key_path:cert_path`` or ``cert_path`` entries
-  separated by ``;`` — installed as local certificate entries named by CN,
-  including the SSL deep-inspection CA pair (which is just a local cert).
+- ``FOS_PKI_CA_CERTS``: ``[refname:]path`` — CAs imported with
+  ``execute vpn certificate ca import tftp`` and named by refname or CN.
+- ``FOS_PKI_LOCAL_CERTS``: ``[refname:]key_path:cert_path`` or
+  ``[refname:]cert_path`` — installed as local certificate entries named by
+  refname or CN, including the SSL deep-inspection CA pair (which is just a
+  local cert).
 - ``FOS_PKI_LOCAL_CERT_PASS_FILES``: ``path;path;...`` — positionally paired
-  with encrypted-key ``key_path:cert_path`` entries; the contents are typed as
-  ``set password``.
-- ``FOS_PKI_REMOTE_CERTS``: ``path;path;...`` — remote certificates imported
-  with ``execute vpn certificate remote import tftp`` and named by CN.
-- ``FOS_PKI_CRLS``: ``path;path;...`` — CRLs installed as ``config vpn
-  certificate crl`` entries with base64-encoded CRL bodies.
+  with encrypted-key ``[refname:]key_path:cert_path`` entries; the contents
+  are typed as ``set password``.
+- ``FOS_PKI_REMOTE_CERTS``: ``[refname:]path`` — remote certificates imported
+  with ``execute vpn certificate remote import tftp`` and named by refname
+  or CN.
+- ``FOS_PKI_CRLS``: ``[refname:]path`` — CRLs installed as ``config vpn
+  certificate crl`` entries with base64-encoded CRL bodies, named by
+  refname or file basename.
 """
 
 import base64
@@ -70,18 +78,66 @@ def parse_ca_certs(value, variable=CA_CERTS_ENV):
     return entries
 
 
+def _parse_refname(entry, variable):
+    """Split an optional leading ``refname:`` from an entry.
+
+    Returns ``(refname_or_None, path)``. A ``None`` refname means the
+    object name is implied by the certificate CN.
+    """
+    refname, separator, path = entry.partition(":")
+    if not separator:
+        _require_path(variable, entry)
+        return None, entry
+    if not path:
+        raise ValueError(
+            f"{variable}: entry '{entry}' must carry a path after the refname"
+        )
+    _require_path(variable, path)
+    return refname or None, path
+
+
+def parse_ca_certs(value, variable=CA_CERTS_ENV):
+    """Return ``(refname_or_None, path)`` pairs from ``value``."""
+    return [
+        _parse_refname(entry, variable)
+        for entry in _split_entries(variable, value)
+    ]
+
+
 def parse_local_certs(value, variable=LOCAL_CERTS_ENV):
-    """Return ``(key_path_or_None, cert_path)`` pairs from ``value``."""
+    """Return ``(refname_or_None, key_path_or_None, cert_path)`` triples.
+
+    Entries are ``[refname:]key_path:cert_path`` or ``[refname:]cert_path``.
+    The refname splits on the first colon, so paths containing ``:`` must
+    carry a refname; an empty refname (``:key:cert``) implies the CN. A
+    single-colon entry is a named cert-only entry, so a bare ``key:cert``
+    pair must be spelled ``:key:cert``.
+    """
     parsed = []
     for entry in _split_entries(variable, value):
-        key_path, separator, cert_path = entry.partition(":")
-        if separator:
-            _require_path(variable, key_path.strip())
-            _require_path(variable, cert_path.strip())
-            parsed.append((key_path.strip(), cert_path.strip()))
-        else:
+        refname, separator, remainder = entry.partition(":")
+        if not separator:
             _require_path(variable, entry)
-            parsed.append((None, entry))
+            parsed.append((None, None, entry))
+            continue
+        refname = refname or None
+        key_path, separator, cert_path = remainder.partition(":")
+        if separator:
+            _require_path(variable, key_path)
+            _require_path(variable, cert_path)
+            parsed.append((refname, key_path, cert_path))
+        elif not refname:
+            _require_path(variable, remainder)
+            parsed.append((None, None, remainder))
+        elif os.path.exists(refname) and os.path.exists(remainder):
+            raise ValueError(
+                f"{variable}: entry '{entry}' is ambiguous; a bare "
+                "key:cert pair must be spelled ':key:cert' to imply the "
+                "certificate CN"
+            )
+        else:
+            _require_path(variable, remainder)
+            parsed.append((refname, None, remainder))
     return parsed
 
 
@@ -93,17 +149,19 @@ def parse_pass_files(value, variable=LOCAL_CERT_PASS_FILES_ENV):
 
 
 def parse_remote_certs(value, variable=REMOTE_CERTS_ENV):
-    entries = _split_entries(variable, value)
-    for entry in entries:
-        _require_path(variable, entry)
-    return entries
+    """Return ``(refname_or_None, path)`` pairs from ``value``."""
+    return [
+        _parse_refname(entry, variable)
+        for entry in _split_entries(variable, value)
+    ]
 
 
 def parse_crls(value, variable=CRLS_ENV):
-    entries = _split_entries(variable, value)
-    for entry in entries:
-        _require_path(variable, entry)
-    return entries
+    """Return ``(refname_or_None, path)`` pairs from ``value``."""
+    return [
+        _parse_refname(entry, variable)
+        for entry in _split_entries(variable, value)
+    ]
 
 
 def read_certificate_cn(path):
@@ -178,14 +236,14 @@ class InstallPkiCertificates(Feature):
             )
         paired = []
         pass_index = 0
-        for key_path, cert_path in self._local_entries:
+        for refname, key_path, cert_path in self._local_entries:
             if key_path is None:
-                paired.append((key_path, cert_path, None))
+                paired.append((refname, key_path, cert_path, None))
                 continue
             if pass_index >= len(self._pass_files):
-                paired.append((key_path, cert_path, None))
+                paired.append((refname, key_path, cert_path, None))
                 continue
-            paired.append((key_path, cert_path, self._pass_files[pass_index]))
+            paired.append((refname, key_path, cert_path, self._pass_files[pass_index]))
             pass_index += 1
         if pass_index < len(self._pass_files):
             raise ValueError(
@@ -236,10 +294,10 @@ class InstallPkiCertificates(Feature):
         if not (self._ca_paths or self._remote_paths):
             return
         os.makedirs(self._staging_directory, exist_ok=True)
-        for index, path in enumerate(self._ca_paths, start=1):
+        for index, (_refname, path) in enumerate(self._ca_paths, start=1):
             staged = os.path.join(self._staging_directory, f"pki-ca-{index:03d}.pem")
             shutil.copyfile(path, staged)
-        for index, path in enumerate(self._remote_paths, start=1):
+        for index, (_refname, path) in enumerate(self._remote_paths, start=1):
             staged = os.path.join(self._staging_directory, f"pki-remote-{index:03d}.pem")
             shutil.copyfile(path, staged)
 
@@ -267,13 +325,14 @@ class InstallPkiCertificates(Feature):
         warnings = []
         seen = {}
         blocks = []
-        for key_path, cert_path, pass_file in paired:
+        for refname, key_path, cert_path, pass_file in paired:
             cn = read_certificate_cn(cert_path)
-            if cn in seen:
+            name = refname or cn
+            if name in seen:
                 warnings.append(
-                    f"Duplicate certificate CN '{cn}'; last entry wins"
+                    f"Duplicate local certificate name '{name}'; last entry wins"
                 )
-            seen[cn] = True
+            seen[name] = True
             lines = []
             if key_path:
                 with open(key_path, "r", encoding="utf-8") as key:
@@ -283,7 +342,7 @@ class InstallPkiCertificates(Feature):
             if pass_file:
                 lines.append(f"set password {read_pass_file(pass_file)}")
             blocks.append(ConfigBlock("vpn certificate local", [
-                EditBlock(f'"{cn}"', lines),
+                EditBlock(f'"{name}"', lines),
             ]))
         for warning in warnings:
             self._logger.warning(warning)
@@ -304,9 +363,9 @@ class InstallPkiCertificates(Feature):
         warnings = []
         seen = {}
         blocks = []
-        for path in self._crl_paths:
+        for refname, path in self._crl_paths:
             crl_base64 = read_crl_body(path)
-            name = self._crl_name(path)
+            name = refname or self._crl_basename(path)
             if name in seen:
                 warnings.append(f"Duplicate CRL name '{name}'; last entry wins")
             seen[name] = True
@@ -317,11 +376,9 @@ class InstallPkiCertificates(Feature):
             self._logger.warning(warning)
         self.commander.submit_block(self, CommandSequence("crl-config", blocks))
 
-    def _crl_name(self, path):
-        try:
-            return read_certificate_cn(path)
-        except ValueError:
-            return os.path.splitext(os.path.basename(path))[0]
+    @staticmethod
+    def _crl_basename(path):
+        return os.path.splitext(os.path.basename(path))[0]
 
     def on_command_executed(self, command, state):
         if self._phase == "crl-detect" and command.spec.capture_output:
