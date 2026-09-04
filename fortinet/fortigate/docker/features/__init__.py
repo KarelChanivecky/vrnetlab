@@ -9,6 +9,7 @@ from file_watcher import FeatureFileWatcher
 from .default_config import DefaultConfig
 from .license import SetLicense, WaitForLicenseValidation
 from .mgmt_net import ConfigureMgmtNetwork, ReconfigureMgmtNetwork, MoveMgmtToVrf1
+from .pki import InstallPkiCertificates
 from .startup_config import ApplyStartupConfig, parse_startup_config
 from .fortiguard_hooks import ConfigureFortiGuardHooks, fortiguard_hooks_enabled
 
@@ -24,6 +25,7 @@ __all__ = [
     "WaitForLicenseValidation",
     "ConfigureMgmtNetwork",
     "ConfigureFortiGuardHooks",
+    "InstallPkiCertificates",
     "ReconfigureMgmtNetwork",
     "MoveMgmtToVrf1",
     "StaticFeature",
