@@ -5,26 +5,25 @@ certificates, and certificate revocation lists at bootstrap. Env variables
 carry paths only; this feature reads the file contents and never logs or
 stores the certificate, key, or password bytes themselves.
 
-Entries are ``;``-separated and may carry a leading reference name that
-becomes the FortiOS object name (``refname:``); when the refname is omitted,
-the object is named after the certificate CN. Path values containing ``:``
-must therefore carry a refname.
+Entries are ``;``-separated and start with a reference-name field followed
+by ``:`` (``refname:rest``). The refname becomes the FortiOS object name;
+an empty refname field (``:rest``) implies the object name from the
+certificate CN.
 
 Env variables:
 
-- ``FOS_PKI_CA_CERTS``: ``[refname:]path`` — CAs imported with
-  ``execute vpn certificate ca import tftp`` and named by refname or CN.
-- ``FOS_PKI_LOCAL_CERTS``: ``[refname:]key_path:cert_path`` or
-  ``[refname:]cert_path`` — installed as local certificate entries named by
+- ``FOS_PKI_CA_CERTS``: ``refname:path`` — CAs imported with
+  ``execute vpn certificate ca import tftp`` and named by their CN.
+- ``FOS_PKI_LOCAL_CERTS``: ``refname:key_path:cert_path`` or
+  ``refname:cert_path`` — installed as local certificate entries named by
   refname or CN, including the SSL deep-inspection CA pair (which is just a
   local cert).
 - ``FOS_PKI_LOCAL_CERT_PASS_FILES``: ``path;path;...`` — positionally paired
-  with encrypted-key ``[refname:]key_path:cert_path`` entries; the contents
+  with encrypted-key ``refname:key_path:cert_path`` entries; the contents
   are typed as ``set password``.
-- ``FOS_PKI_REMOTE_CERTS``: ``[refname:]path`` — remote certificates imported
-  with ``execute vpn certificate remote import tftp`` and named by refname
-  or CN.
-- ``FOS_PKI_CRLS``: ``[refname:]path`` — CRLs installed as ``config vpn
+- ``FOS_PKI_REMOTE_CERTS``: ``refname:path`` — remote certificates imported
+  with ``execute vpn certificate remote import tftp`` and named by their CN.
+- ``FOS_PKI_CRLS``: ``refname:path`` — CRLs installed as ``config vpn
   certificate crl`` entries with base64-encoded CRL bodies, named by
   refname or file basename.
 """
@@ -71,73 +70,64 @@ def _require_path(variable, path):
         raise ValueError(f"{variable}: path does not exist: {path}")
 
 
-def parse_ca_certs(value, variable=CA_CERTS_ENV):
-    entries = _split_entries(variable, value)
-    for entry in entries:
-        _require_path(variable, entry)
-    return entries
+def _split_refname(entry, variable):
+    """Split the leading refname field from an entry.
 
-
-def _parse_refname(entry, variable):
-    """Split an optional leading ``refname:`` from an entry.
-
-    Returns ``(refname_or_None, path)``. A ``None`` refname means the
-    object name is implied by the certificate CN.
+    Every entry is ``refname:rest``; an empty refname field (``:rest``)
+    means the object name is implied by the certificate CN.
+    Returns ``(refname_or_None, rest)``.
     """
-    refname, separator, path = entry.partition(":")
+    refname, separator, rest = entry.partition(":")
     if not separator:
-        _require_path(variable, entry)
-        return None, entry
-    if not path:
+        raise ValueError(
+            f"{variable}: entry '{entry}' must start with a refname field "
+            "followed by ':'; use ':" + entry + "' to imply the "
+            "certificate CN"
+        )
+    if not rest:
         raise ValueError(
             f"{variable}: entry '{entry}' must carry a path after the refname"
         )
-    _require_path(variable, path)
-    return refname or None, path
+    return refname or None, rest
 
 
 def parse_ca_certs(value, variable=CA_CERTS_ENV):
     """Return ``(refname_or_None, path)`` pairs from ``value``."""
-    return [
-        _parse_refname(entry, variable)
+    parsed = []
+    for refname, path in (
+        _split_refname(entry, variable)
         for entry in _split_entries(variable, value)
-    ]
+    ):
+        _require_path(variable, path)
+        parsed.append((refname, path))
+    return parsed
 
 
 def parse_local_certs(value, variable=LOCAL_CERTS_ENV):
     """Return ``(refname_or_None, key_path_or_None, cert_path)`` triples.
 
-    Entries are ``[refname:]key_path:cert_path`` or ``[refname:]cert_path``.
-    The refname splits on the first colon, so paths containing ``:`` must
-    carry a refname; an empty refname (``:key:cert``) implies the CN. A
-    single-colon entry is a named cert-only entry, so a bare ``key:cert``
-    pair must be spelled ``:key:cert``.
+    Entries are ``refname:key_path:cert_path`` or ``refname:cert_path``.
+    The refname field is always present; ``:key_path:cert_path`` implies
+    the certificate CN as the object name.
     """
     parsed = []
     for entry in _split_entries(variable, value):
-        refname, separator, remainder = entry.partition(":")
-        if not separator:
-            _require_path(variable, entry)
-            parsed.append((None, None, entry))
-            continue
-        refname = refname or None
-        key_path, separator, cert_path = remainder.partition(":")
+        refname, rest = _split_refname(entry, variable)
+        key_path, separator, cert_path = rest.partition(":")
         if separator:
             _require_path(variable, key_path)
             _require_path(variable, cert_path)
             parsed.append((refname, key_path, cert_path))
-        elif not refname:
-            _require_path(variable, remainder)
-            parsed.append((None, None, remainder))
-        elif os.path.exists(refname) and os.path.exists(remainder):
+        elif refname and os.path.exists(refname) and os.path.exists(rest):
             raise ValueError(
-                f"{variable}: entry '{entry}' is ambiguous; a bare "
-                "key:cert pair must be spelled ':key:cert' to imply the "
-                "certificate CN"
+                f"{variable}: entry '{entry}' looks like a bare key_path:"
+                "cert_path pair; a CN-implied pair must be spelled "
+                "':key_path:cert_path' and a named pair "
+                "'refname:key_path:cert_path'"
             )
         else:
-            _require_path(variable, remainder)
-            parsed.append((refname, None, remainder))
+            _require_path(variable, rest)
+            parsed.append((refname, None, rest))
     return parsed
 
 
@@ -150,18 +140,26 @@ def parse_pass_files(value, variable=LOCAL_CERT_PASS_FILES_ENV):
 
 def parse_remote_certs(value, variable=REMOTE_CERTS_ENV):
     """Return ``(refname_or_None, path)`` pairs from ``value``."""
-    return [
-        _parse_refname(entry, variable)
+    parsed = []
+    for refname, path in (
+        _split_refname(entry, variable)
         for entry in _split_entries(variable, value)
-    ]
+    ):
+        _require_path(variable, path)
+        parsed.append((refname, path))
+    return parsed
 
 
 def parse_crls(value, variable=CRLS_ENV):
     """Return ``(refname_or_None, path)`` pairs from ``value``."""
-    return [
-        _parse_refname(entry, variable)
+    parsed = []
+    for refname, path in (
+        _split_refname(entry, variable)
         for entry in _split_entries(variable, value)
-    ]
+    ):
+        _require_path(variable, path)
+        parsed.append((refname, path))
+    return parsed
 
 
 def read_certificate_cn(path):
