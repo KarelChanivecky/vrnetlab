@@ -91,6 +91,29 @@ class EditBlock(Scope):
         return "next"
 
 
+class SetValue:
+    """A ``set <field> "<value>"`` command whose quoted value spans CLI lines.
+
+    ``CommandSpec`` rejects embedded newlines, and FortiOS accepts a quoted
+    multi-line value typed across CLI lines: the first line opens the quote,
+    following body lines are typed verbatim, and the last body line closes it.
+    """
+
+    def __init__(self, field, value):
+        self.field = field
+        self.value = value
+
+    def flatten(self):
+        lines = str(self.value).strip().split("\n")
+        if len(lines) == 1:
+            return [CommandSpec(f'set {self.field} "{lines[0]}"')]
+        return [
+            CommandSpec(f'set {self.field} "{lines[0]}"'),
+            *[CommandSpec(line) for line in lines[1:-1]],
+            CommandSpec(f'{lines[-1]}"'),
+        ]
+
+
 class CommandSequence:
     """An unscoped workflow container; it does not emit CLI framing."""
 
@@ -111,7 +134,7 @@ def flatten_commands(value):
         return [CommandSpec(value)]
     if isinstance(value, CommandSpec):
         return [value]
-    if isinstance(value, (Scope, CommandSequence)):
+    if isinstance(value, (Scope, CommandSequence, SetValue)):
         return value.flatten()
     raise TypeError(
         "Commands must be strings, CommandSpec instances, or command containers"
