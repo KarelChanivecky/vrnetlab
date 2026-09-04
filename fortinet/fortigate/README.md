@@ -83,13 +83,18 @@ applies the intended startup config.
 | --- | --- | --- | --- |
 | `CLAB_MGMT_PASSTHROUGH` | `true` | `true`, `false` | Selects management wiring. `true` uses tap/tc passthrough so the FortiGate management interface participates directly in the Containerlab management network. `false` uses a host-forwarded bridge inside the vrnetlab container. |
 | `FOS_DISK_SPECS` | unset | comma-separated `qemu-img create` sizes, for example `10g` or `10g,10g` | Adds extra virtio disks. One disk becomes the FortiGate log disk. Additional disks are formatted during bootstrap; the second disk is expected to become WAN optimization storage on FortiOS versions that support it. |
-| `FOS_DEBUG_FEATURE` | unset | feature name | Runs bootstrap only through the named feature, then skips later features. Public feature order: `disk-format`, `admin`, `management`, `bootstrap-dns`, `setup-license`, `default-config`, `management-after-license`, `license-validation`, `management-vrf`, `undo-bootstrap-dns`, `fortitoken-provisioning`, `capture-config`, `startup-config`. |
+| `FOS_DEBUG_FEATURE` | unset | feature name | Runs bootstrap only through the named feature, then skips later features. Public feature order: `disk-format`, `admin`, `management`, `bootstrap-dns`, `setup-license`, `default-config`, `management-after-license`, `license-validation`, `management-vrf`, `undo-bootstrap-dns`, `fortitoken-provisioning`, `capture-config`, `pki-certificates`, `startup-config`. |
 | `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` | `120` | seconds | Maximum time to poll `get system status` for license status to leave `Pending` after license installation. |
 | `FOS_LOG_LEVEL` | `DEBUG` | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or numeric Python log level | Sets launcher log verbosity. |
 | `FOS_MGMT_DNS_PRIMARY` | `1.1.1.1` | IPv4 address | Sets the primary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. |
 | `FOS_MGMT_DNS_SECONDARY` | `8.8.8.8` | IPv4 address | Sets the secondary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. The legacy misspelling `FOS_MGMG_DNS_SECONDARY` remains accepted. |
 | `FOS_NO_ENC_CONFIG` | `false` | `true`, `false` | When `true`, ignores ENC-only changes on entries that already exist in the baseline. New entries and entries with other changes retain their encrypted fields. |
 | `FOS_ONBOARDING` | `false` | `true`, `false` | When `true`, disables the HTTPS redirect and automatic-upgrade setup warning in the default FortiOS GUI configuration. |
+| `FOS_PKI_CA_CERTS` | unset | semicolon-separated PEM file paths | Trusts CA certificates. Each file is staged under `/tftpboot/pki/` and imported with `execute vpn certificate ca import tftp`; objects are named after each certificate CN. |
+| `FOS_PKI_LOCAL_CERTS` | unset | semicolon-separated `key_path:cert_path` or `cert_path` entries | Installs local certificates named after each certificate CN, including the SSL deep-inspection CA pair, by typing the PEM contents into `config vpn certificate local`. Entries without a key install certificate-only entries. |
+| `FOS_PKI_LOCAL_CERT_PASS_FILES` | unset | semicolon-separated file paths | Optional password files whose contents are typed as `set password` for encrypted private keys, paired positionally with keyed `FOS_PKI_LOCAL_CERTS` entries. |
+| `FOS_PKI_REMOTE_CERTS` | unset | semicolon-separated PEM file paths | Imports remote peer certificates. Each file is staged under `/tftpboot/pki/` and imported with `execute vpn certificate remote import tftp`; objects are named after each certificate CN. |
+| `FOS_PKI_CRLS` | unset | semicolon-separated CRL file paths | Installs CRLs as base64 bodies in `config vpn certificate crl` (or `config certificate crl` on older releases; detected from `get system status`). Entries are named after the issuer CN when readable, otherwise the file basename. |
 | `FOS_UUID` | random UUID | UUID string | Sets the QEMU VM UUID. If unset, a new UUID is generated for each launch. |
 
 Containerlab also passes the usual vrnetlab launch arguments such as hostname,
@@ -237,6 +242,41 @@ After installation, the launcher polls `get system status` until the license
 field is no longer `Pending`. By default it waits up to 2 minutes. Set
 `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` to override that timeout for shorter
 targeted runs.
+
+## PKI Certificates
+
+Set the `FOS_PKI_*` variables to install certificates, CAs, and CRLs at
+bootstrap. All variables carry file paths only — the plugin stages the PEM
+files and the launcher reads their contents; certificate, key, and password
+bytes never travel through the environment.
+
+```yaml
+envs:
+  FOS_PKI_CA_CERTS: "/lab/root-ca.pem;/lab/intermediate.pem"
+  FOS_PKI_LOCAL_CERTS: "/lab/server.key:/lab/server.pem;/lab/dca.key:/lab/dca.pem"
+  FOS_PKI_LOCAL_CERT_PASS_FILES: "/lab/server.pass"
+  FOS_PKI_REMOTE_CERTS: "/lab/peer.pem"
+  FOS_PKI_CRLS: "/lab/issuer.crl"
+```
+
+- `FOS_PKI_CA_CERTS` and `FOS_PKI_REMOTE_CERTS` files are imported over TFTP
+  with `execute vpn certificate ... import tftp` and named by CN.
+- `FOS_PKI_LOCAL_CERTS` entries are typed into
+  `config vpn certificate local` as quoted multi-line PEM values named by CN.
+  The same mechanism covers server certificates and the SSL deep-inspection
+  CA pair.
+- `FOS_PKI_LOCAL_CERT_PASS_FILES` entries pair positionally with
+  keyed `FOS_PKI_LOCAL_CERTS` entries whose private keys are encrypted.
+- `FOS_PKI_CRLS` entries are installed as base64 bodies with the config tree
+  detected from the FortiOS version.
+
+Certificates are installed after the factory baseline is captured and before
+the startup config applies, so startup config can reference installed
+certificate names. Duplicate CNs within one category keep the last entry and
+log a warning. Missing files abort startup with an error naming the variable
+and path. Not supported: SCEP/EST/CMP enrollment, HSM certificates, OCSP
+servers, inline base64 certificate values, certificate generation, and
+ssl-ssh-profile wiring.
 
 ## Extra Disks
 
