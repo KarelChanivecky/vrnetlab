@@ -26,6 +26,7 @@ from features import (
     ConfigureMgmtNetwork,
     ReconfigureMgmtNetwork,
     MoveMgmtToVrf1,
+    InstallPkiCertificates,
     ApplyStartupConfig,
 )
 from host_forwarded_bridge import HostForwardedBridge
@@ -216,6 +217,7 @@ class FortiOS_vm(vrnetlab.VM):
             MoveMgmtToVrf1(self, self.commander),
             configure_dns.undo(),
             ConfigSaveFeature(self, self.commander),
+            InstallPkiCertificates(self, self.commander),
             ApplyStartupConfig(self, self.commander),
         ]
         self._features = apply_debug_feature_cutoff(
