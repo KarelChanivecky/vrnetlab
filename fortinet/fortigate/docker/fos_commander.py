@@ -21,7 +21,11 @@ from common import FOSCliState, TRACE_LEVEL
 DISPATCHABLE_COMPLETION_STATES = {
     FOSCliState.CMD_PROMPT,
     FOSCliState.CONFIRMATION,
+    FOSCliState.MULTILINE_PROMPT,
 }
+COMMAND_FAILURE_PATTERN = re.compile(
+    rb"(?mi)^\s*Command fail\.\s*Return code\s+(-?\d+)"
+)
 
 
 @dataclass
@@ -65,6 +69,11 @@ class FOSCommander:
     @property
     def busy(self):
         return self._inflight is not None or bool(self._pending) or bool(self._cleanup)
+
+    @property
+    def startup_complete(self):
+        """Whether the initial feature queue has completed successfully."""
+        return self._startup_complete
 
     def start(self, features):
         self._features.extend(features)
@@ -228,6 +237,7 @@ class FOSCommander:
         self._inflight = None
         self._suppression.close()
         self._suppression = ExitStack()
+        self._validate_completion(attempt, state)
         if self._in_cleanup:
             self._in_cleanup = False
             self._dispatch_next()
@@ -243,6 +253,22 @@ class FOSCommander:
             self._active_feature.on_block_complete()
         if not self._recovering and state in DISPATCHABLE_COMPLETION_STATES:
             self._dispatch_next()
+
+    @staticmethod
+    def _validate_completion(attempt, state):
+        if attempt.spec.fail_on_error and (
+            failure := COMMAND_FAILURE_PATTERN.search(bytes(attempt.output))
+        ):
+            raise RuntimeError(
+                "FortiOS command failed "
+                f"(return code {failure.group(1).decode()})"
+            )
+        expected = attempt.spec.expected_completion_state
+        if expected is not None and state != expected:
+            raise RuntimeError(
+                "CLI command completed at unexpected prompt: "
+                f"expected {expected.name}, received {state.name}"
+            )
 
     def _is_standard_output_command(self, spec):
         context = self._standard_output_context

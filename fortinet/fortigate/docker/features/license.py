@@ -12,6 +12,7 @@ from .base import Feature
 
 DEFAULT_LICENSE_STATUS_TIMEOUT_SECONDS = 2 * 60
 LICENSE_STATUS_POLL_INTERVAL_SECONDS = 2
+LICENSE_SETTLE_SECONDS = 3
 
 
 def license_status_timeout_seconds():
@@ -96,6 +97,7 @@ class WaitForLicenseValidation(Feature):
         self._phase = "idle"
         self._status = None
         self._standard_output_active = False
+        self._settle_until = 0
 
     @property
     def status(self):
@@ -120,8 +122,13 @@ class WaitForLicenseValidation(Feature):
             self._next_poll = time.monotonic() + LICENSE_STATUS_POLL_INTERVAL_SECONDS
             return
         self._status = status
+        if status.lower() != "valid":
+            raise RuntimeError(
+                f"VM license validation failed: status {status}"
+            )
         self._logger.info(f"License status changed to {status}")
         self._phase = "done"
+        self._settle_until = time.monotonic() + LICENSE_SETTLE_SECONDS
 
     @staticmethod
     def _license_status(output):
@@ -131,18 +138,25 @@ class WaitForLicenseValidation(Feature):
         return match.group(1).decode(errors="replace").strip() if match else None
 
     def on_block_complete(self):
-        if self._phase == "done":
-            self.commander.feature_complete(self)
+        if self._phase != "done":
+            return
+        if time.monotonic() < self._settle_until:
+            return
+        self.commander.feature_complete(self)
 
     def tick(self):
+        now = time.monotonic()
+        if self._phase == "done":
+            if now >= self._settle_until:
+                self.commander.feature_complete(self)
+            return
         if self._phase != "polling" or self._next_poll is None:
             return
-        if time.monotonic() >= self._deadline:
-            self._logger.warning("License status remained Pending.")
-            self._phase = "done"
-            self.commander.feature_complete(self)
-            return
-        if time.monotonic() >= self._next_poll and not self.commander.busy:
+        if now >= self._deadline:
+            raise RuntimeError(
+                "VM license validation timed out while status remained Pending"
+            )
+        if now >= self._next_poll and not self.commander.busy:
             self._next_poll = None
             if self._standard_output_active:
                 self._submit_status_poll()

@@ -87,6 +87,8 @@ class FOSCliDriver:
             self._process_state(state, output)
 
     def _log_state(self, state):
+        if state == FOSCliState.MULTILINE_PROMPT:
+            return
         if state == FOSCliState.CMD_PROMPT and self._last_logged_state == state:
             return
         self._last_logged_state = state

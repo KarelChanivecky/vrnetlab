@@ -21,11 +21,14 @@ from features import (
     FeatureFileWatcher,
     DefaultConfig,
     ConfigureFortiGuardHooks,
+    ReapplyFortiGuardHooks,
     SetLicense,
     WaitForLicenseValidation,
+    WaitForFortiTokens,
     ConfigureMgmtNetwork,
     ReconfigureMgmtNetwork,
     MoveMgmtToVrf1,
+    DetectSystemVersion,
     InstallPkiCertificates,
     ApplyStartupConfig,
 )
@@ -90,6 +93,18 @@ def parse_log_level(value):
         "Invalid FOS_LOG_LEVEL. Use TRACE, DEBUG, INFO, WARN, ERROR, "
         "another Python logging level name, or a numeric level."
     )
+
+
+def exit_on_bootstrap_error(value=None):
+    """Return whether a bootstrap exception should terminate the VM.
+
+    Bootstrap failures are fatal by default.  The opt-out is intentionally
+    narrow: only the explicit value ``false`` disables termination, so a
+    misspelled or otherwise invalid value keeps the fail-fast behavior.
+    """
+    if value is None:
+        value = os.getenv("FOS_EXIT_ON_BOOTSTRAP_ERROR", "true")
+    return str(value).strip().lower() != "false"
 
 
 def apply_debug_feature_cutoff(features, stop_feature, logger):
@@ -177,6 +192,8 @@ class FortiOS_vm(vrnetlab.VM):
         self.qemu_args.extend(["-uuid", os.getenv("FOS_UUID") or str(uuid.uuid4())])
         self.spins = 0
         self.stopped = False
+        self._bootstrap_error = None
+        self._exit_on_bootstrap_error = exit_on_bootstrap_error()
         self.waiting_for = False
         self._mgmt_net = mgmt_net
         self._mgmt_net.configure_vm_mgmt(self)
@@ -194,6 +211,7 @@ class FortiOS_vm(vrnetlab.VM):
             terminal=self.terminal,
             logger=logger,
         )
+        self.fos_version = None
         self.driver = FOSCliDriver(
             self.terminal,
             self.commander,
@@ -204,20 +222,23 @@ class FortiOS_vm(vrnetlab.VM):
             self.activate_bootstrap_credentials,
         )
         configure_dns = ConfigureMgmtDns(self, self.commander)
+        license_validation = WaitForLicenseValidation(self, self.commander)
         self._features = [
             FormatDisks(self, self.commander),
             CredentialsFeature(self, self.commander),
+            DetectSystemVersion(self, self.commander),
             ConfigureMgmtNetwork(self, self.commander),
             configure_dns,
             ConfigureFortiGuardHooks(self, self.commander),
             SetLicense(self, self.commander),
+            ReapplyFortiGuardHooks(self, self.commander),
             DefaultConfig(self, self.commander),
             ReconfigureMgmtNetwork(self, self.commander),
-            WaitForLicenseValidation(self, self.commander),
-            MoveMgmtToVrf1(self, self.commander),
-            configure_dns.undo(),
-            ConfigSaveFeature(self, self.commander),
+            license_validation,
+            WaitForFortiTokens(self, self.commander, license_validation),
             InstallPkiCertificates(self, self.commander),
+            MoveMgmtToVrf1(self, self.commander),
+            ConfigSaveFeature(self, self.commander),
             ApplyStartupConfig(self, self.commander),
         ]
         self._features = apply_debug_feature_cutoff(
@@ -227,8 +248,6 @@ class FortiOS_vm(vrnetlab.VM):
         )
         self._file_watcher = FeatureFileWatcher(self._features, self.logger)
         self.commander.start(self._features)
-        # set up the extra empty disk image
-        # for fortigate logs
         vrnetlab.run_command(
             ["qemu-img", "create", "-f", "qcow2", "empty.qcow2", "30G"]
         )
@@ -262,20 +281,28 @@ class FortiOS_vm(vrnetlab.VM):
 
         returns False when it has failed and given up, otherwise True
         """
+        if self._bootstrap_error is not None:
+            return False
         try:
             self.driver.process_state()
-        except Exception:
-            self.stop()
-            raise
+        except Exception as error:
+            if self._exit_on_bootstrap_error or self.commander.startup_complete:
+                self.stop()
+                raise
+            self._bootstrap_error = error
+            self.logger.exception(
+                "Bootstrap failed; keeping the VM running for manual repair "
+                "because FOS_EXIT_ON_BOOTSTRAP_ERROR=false"
+            )
+            return False
         if self.driver.ready:
             self.running = True
+        return True
 
     def work(self):
         super().work()
         if self.running:
             self._file_watcher.poll()
-            # Runtime features such as get-config share the event-driven CLI
-            # scheduler with bootstrap and must continue receiving serial work.
             if not self.driver.ready:
                 self.bootstrap_spin()
 
