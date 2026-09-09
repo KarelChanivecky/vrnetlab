@@ -83,18 +83,19 @@ applies the intended startup config.
 | --- | --- | --- | --- |
 | `CLAB_MGMT_PASSTHROUGH` | `true` | `true`, `false` | Selects management wiring. `true` uses tap/tc passthrough so the FortiGate management interface participates directly in the Containerlab management network. `false` uses a host-forwarded bridge inside the vrnetlab container. |
 | `FOS_DISK_SPECS` | unset | comma-separated `qemu-img create` sizes, for example `10g` or `10g,10g` | Adds extra virtio disks. One disk becomes the FortiGate log disk. Additional disks are formatted during bootstrap; the second disk is expected to become WAN optimization storage on FortiOS versions that support it. |
-| `FOS_DEBUG_FEATURE` | unset | feature name | Runs bootstrap only through the named feature, then skips later features. Public feature order: `disk-format`, `admin`, `management`, `bootstrap-dns`, `setup-license`, `default-config`, `management-after-license`, `license-validation`, `management-vrf`, `undo-bootstrap-dns`, `fortitoken-provisioning`, `capture-config`, `pki-certificates`, `startup-config`. |
+| `FOS_DEBUG_FEATURE` | unset | feature name | Runs bootstrap only through the named feature, then skips later features. Public feature order: `disk-format`, `admin`, `system-version`, `management`, `bootstrap-dns`, `fortiguard-hooks`, `setup-license`, `fortiguard-hooks-after-license`, `default-config`, `management-after-license`, `license-validation`, `fortitoken-provisioning`, `pki-certificates`, `management-vrf`, `capture-config`, `startup-config`. |
+| `FOS_EXIT_ON_BOOTSTRAP_ERROR` | `true` | `true`, `false` | Stops the launcher with a nonzero exit status when a bootstrap feature raises an error. Set to `false` only for manual recovery or diagnostics; the launcher logs the first error, leaves the VM running, and halts bootstrap without reporting startup complete. |
 | `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` | `120` | seconds | Maximum time to poll `get system status` for license status to leave `Pending` after license installation. |
 | `FOS_LOG_LEVEL` | `DEBUG` | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or numeric Python log level | Sets launcher log verbosity. |
 | `FOS_MGMT_DNS_PRIMARY` | `1.1.1.1` | IPv4 address | Sets the primary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. |
 | `FOS_MGMT_DNS_SECONDARY` | `8.8.8.8` | IPv4 address | Sets the secondary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. The legacy misspelling `FOS_MGMG_DNS_SECONDARY` remains accepted. |
 | `FOS_NO_ENC_CONFIG` | `false` | `true`, `false` | When `true`, ignores ENC-only changes on entries that already exist in the baseline. New entries and entries with other changes retain their encrypted fields. |
 | `FOS_ONBOARDING` | `false` | `true`, `false` | When `true`, disables the HTTPS redirect and automatic-upgrade setup warning in the default FortiOS GUI configuration. |
-| `FOS_PKI_CA_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Trusts CA certificates. Each file is staged under `/tftpboot/pki/` and imported with `execute vpn certificate ca import tftp`; the FortiOS object is named after the certificate CN. |
-| `FOS_PKI_LOCAL_CERTS` | unset | semicolon-separated `refname:key_path:cert_path` or `refname:cert_path` entries | Installs local certificates, including the SSL deep-inspection CA pair, by typing the PEM contents into `config vpn certificate local`. The object is named after the refname when given, otherwise the certificate CN. Every entry starts with the refname field; use an empty field (`:key_path:cert_path`, `:cert_path`) to imply the name. |
+| `FOS_PKI_CA_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Trusts CA certificates by typing the PEM into `config vpn certificate ca`. The object is named after the refname when given, otherwise the certificate CN. |
+| `FOS_PKI_LOCAL_CERTS` | unset | semicolon-separated `refname:key_path:cert_path` entries | Installs local certificate/private-key pairs, including the SSL deep-inspection CA pair, by typing the PEM contents into `config vpn certificate local`. Both files are required. The object is named after the refname when given, otherwise the certificate CN; use an empty refname (`:key_path:cert_path`) to imply the name. |
 | `FOS_PKI_LOCAL_CERT_PASS_FILES` | unset | semicolon-separated file paths | Optional password files whose contents are typed as `set password` for encrypted private keys, paired positionally with keyed `FOS_PKI_LOCAL_CERTS` entries. |
-| `FOS_PKI_REMOTE_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Imports remote peer certificates. Each file is staged under `/tftpboot/pki/` and imported with `execute vpn certificate remote import tftp`; the FortiOS object is named after the certificate CN. |
-| `FOS_PKI_CRLS` | unset | semicolon-separated `refname:path` CRL entries | Installs CRLs as base64 bodies in `config vpn certificate crl` (or `config certificate crl` on older releases; detected from `get system status`). The object is named after the refname when given, otherwise the file basename. |
+| `FOS_PKI_REMOTE_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Installs remote peer certificates by typing the PEM into `config vpn certificate remote`. The object is named after the refname when given, otherwise the certificate CN. |
+| `FOS_PKI_CRLS` | unset | semicolon-separated `refname:path` CRL entries | Installs CRLs as base64 bodies in `config vpn certificate crl` when that tree is available. Older releases without a CRL config tree use `execute vpn certificate crl import tftp`. The object is named after the refname when given, otherwise the file basename. |
 | `FOS_UUID` | random UUID | UUID string | Sets the QEMU VM UUID. If unset, a new UUID is generated for each launch. |
 
 Containerlab also passes the usual vrnetlab launch arguments such as hostname,
@@ -262,20 +263,29 @@ envs:
 Entries are `;`-separated and always start with a refname field followed
 by `:` (`refname:rest`). The refname names the FortiOS object; an empty
 refname field implies the name — the certificate CN for certificates, the
-file basename for CRLs. A bare `key_path:cert_path` without the leading
-field is rejected, since it cannot be told apart from `refname:cert_path`.
+file basename for CRLs. Local certificate entries require both a private key
+and certificate. A bare `key_path:cert_path` without the leading refname field
+is rejected; use `:key_path:cert_path` for CN-derived naming.
 
-- `FOS_PKI_CA_CERTS` and `FOS_PKI_REMOTE_CERTS` files are imported over TFTP
-  with `execute vpn certificate ... import tftp`; FortiOS names those objects
-  after the certificate CN.
+- `FOS_PKI_CA_CERTS` and `FOS_PKI_REMOTE_CERTS` entries are first typed into
+  their respective `config vpn certificate` trees and named by refname or CN.
 - `FOS_PKI_LOCAL_CERTS` entries are typed into
   `config vpn certificate local` as quoted multi-line PEM values named by
-  refname or CN. The same mechanism covers server certificates and the SSL
-  deep-inspection CA pair.
+  refname or CN. Every entry must supply its private key before its certificate.
+  The same mechanism covers server certificates and the SSL deep-inspection CA
+  pair.
 - `FOS_PKI_LOCAL_CERT_PASS_FILES` entries pair positionally with
   keyed `FOS_PKI_LOCAL_CERTS` entries whose private keys are encrypted.
-- `FOS_PKI_CRLS` entries are installed as base64 bodies with the config tree
-  detected from the FortiOS version.
+- `FOS_PKI_CRLS` entries are installed as base64 bodies when the FortiOS
+  version has a CRL config tree. On older versions without that tree, each CRL
+  is staged under `/tftpboot/pki/` and installed with the TFTP import command.
+
+If config installation fails for a CA, remote certificate, or CRL, that object
+is staged under `/tftpboot/pki/` and retried with `execute vpn certificate ...
+import tftp`. A successful fallback logs a warning. A failed fallback aborts
+bootstrap with an error. Local certificate/key pairs cannot use this fallback
+because FortiOS TFTP import does not accept the configured separate key and
+certificate files; their config failure therefore aborts bootstrap directly.
 
 Certificates are installed after the factory baseline is captured and before
 the startup config applies, so startup config can reference installed
@@ -357,6 +367,9 @@ User-visible behavior includes:
 - `admin-scp` enabled for configuration backup support
 - default credential handling across FortiOS 6.4, 7.x, and 8.x behavior
 - password-policy failure surfaced as a startup error
+- bootstrap feature failures stop startup by default; set
+  `FOS_EXIT_ON_BOOTSTRAP_ERROR=false` only when a manually recoverable VM is
+  preferred over an immediate launcher exit
 - explicit failure if no `qcow2` image is present
 - full serial output logging at debug level
 

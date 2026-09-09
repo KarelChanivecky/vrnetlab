@@ -231,14 +231,21 @@ Current bootstrap stages are:
 - `disk-format`: formats additional disks after the first FortiGate log disk
 - `admin`: disables password policy, creates/updates the desired admin, and
   handles session loss during password changes
+- `system-version`: reads `get system status` once and stores the parsed
+  platform, major, minor, patch, and build on `vm.fos_version` for later
+  features
 - `management`: configures `port1`, FortiGuard interface selection, and the
   management route for static management addressing
 - `bootstrap-dns`: temporarily sets DNS for license/bootstrap reachability
+- `fortiguard-hooks`: applies the hooks guard and FortiGuard settings used by
+  fortiguard hooks
 - `setup-license`: restores `/tftpboot/appliance.lic` over TFTP and handles reboot
 - `default-config`: applies launcher-owned defaults such as `admin-scp` and the
   final hostname
 - `management-after-license`: reapplies management after license restore because
   FortiOS can remove routes or drop sessions when registration state changes
+- `fortiguard-hooks-after-license`: reapplies the fortiguard-hooks FortiGuard settings
+  after the license reboot whenever fortiguard-hooks mode is enabled
 - `license-validation`: polls `get system status` until license status is no longer
   `Pending`, or until the configured timeout
 - `management-vrf`: moves management into VRF 1 when supported, or narrows
@@ -248,14 +255,23 @@ Current bootstrap stages are:
   license-provisioned FortiTokens for up to 15 seconds
 - `capture-config`: records a clean baseline and later services `/get-config`
   runtime captures
-- `pki-certificates`: imports CA/remote certificates over TFTP, types local
-  certificate PEM pairs into `config vpn certificate local`, and installs CRL
-  bodies — all from `FOS_PKI_*` environment variables that carry paths only
+- `pki-certificates`: installs CA, local, remote, and CRL objects from
+  `FOS_PKI_*` path variables; failed config installs fall back to TFTP where
+  supported, warning on successful fallback and failing bootstrap if both
+  methods fail
 - `startup-config`: imports the user-supplied startup config
 
 `FeatureFileWatcher` polls watched feature paths after bootstrap. Today the
 main runtime feature is config capture: touching `/get-config` enqueues the
 capture feature after the launcher reconnects to the serial console.
+
+Bootstrap feature errors are fatal by default. Set
+`FOS_EXIT_ON_BOOTSTRAP_ERROR=false` to log the first feature error, leave the
+VM running, and halt bootstrap so an operator can repair the guest manually.
+Best-effort mode does not undo commands that already ran and does not report
+the partially configured VM as healthy. Runtime feature failures, such as a
+`/get-config` request, remain request errors and do not change this bootstrap
+policy.
 
 The feature architecture is intentionally serial. FortiOS CLI state is global,
 the console has one prompt stream, and several operations can reboot or remove
