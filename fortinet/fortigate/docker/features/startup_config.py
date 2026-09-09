@@ -10,7 +10,33 @@ class ApplyStartupConfig(StaticFeature):
     def __init__(self, vm, commander):
         path = "/config/startup-config.cfg"
         blocks = parse_startup_config(path) if os.path.exists(path) else []
+        blocks = filter_startup_config_blocks(blocks, commander.logger)
         super().__init__(vm, commander, "startup-config", blocks)
+
+
+def filter_startup_config_blocks(blocks, logger):
+    """Skip startup DNS configuration that conflicts with fortiguard-hooks DNS."""
+    if not (
+        "FOS_FORTIGUARD_HOOKS" in os.environ
+        and (
+            "FOS_MGMT_DNS_PRIMARY" in os.environ
+            or "FOS_MGMT_DNS_SECONDARY" in os.environ
+        )
+    ):
+        return blocks
+
+    filtered = [
+        block
+        for block in blocks
+        if not (isinstance(block, ConfigBlock) and block.value == "system dns")
+    ]
+    if len(filtered) != len(blocks):
+        logger.warning(
+            "Skipping startup config block 'config system dns' because "
+            "FOS_FORTIGUARD_HOOKS is present with FOS_MGMT_DNS_PRIMARY or "
+            "FOS_MGMT_DNS_SECONDARY"
+        )
+    return filtered
 
 
 def parse_startup_config(path):
