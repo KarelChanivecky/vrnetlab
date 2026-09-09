@@ -11,8 +11,6 @@ from contextlib import contextmanager
 
 import vrnetlab
 from common import Credentials, DEFAULT_PASSWORD, DEFAULT_USERNAME, DEF_POLICY_COMPLIANT_PASSWORD, TRACE_LEVEL
-from fos_cli_driver import FOSCliDriver
-from fos_commander import FOSCommander
 from features import (
     CredentialsFeature,
     ConfigureMgmtDns,
@@ -32,6 +30,8 @@ from features import (
     InstallPkiCertificates,
     ApplyStartupConfig,
 )
+from fos_cli_driver import FOSCliDriver
+from fos_commander import FOSCommander
 from host_forwarded_bridge import HostForwardedBridge
 from net_mgmt_strategy import NetMgmtStrategy
 from passthrough_redirect import PassthroughRedirect
@@ -184,6 +184,8 @@ class FortiOS_vm(vrnetlab.VM):
         self.tn = FortiOSConsole(self.scrapli_tn)
 
         self.logger.info(f"Launching. commandline: {' '.join(sys.argv)}")
+        self.logger.warn("deploy --reconfigure, deploy --restore, redeploy, restart, restore, save, stop-then-start,"
+                         " not supported at this moment.")
         self.conn_mode = conn_mode
         self.hostname = hostname
         self.num_nics = 12
