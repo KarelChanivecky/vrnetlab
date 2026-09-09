@@ -12,23 +12,22 @@ certificate CN.
 
 Env variables:
 
-- ``FOS_PKI_CA_CERTS``: ``refname:path`` — CAs imported with
-  ``execute vpn certificate ca import tftp`` and named by their CN.
-- ``FOS_PKI_LOCAL_CERTS``: ``refname:key_path:cert_path`` or
-  ``refname:cert_path`` — installed as local certificate entries named by
-  refname or CN, including the SSL deep-inspection CA pair (which is just a
-  local cert).
+- ``FOS_PKI_CA_CERTS``: ``refname:path`` — CAs installed in
+  ``config vpn certificate ca`` and named by refname or CN.
+- ``FOS_PKI_LOCAL_CERTS``: ``refname:key_path:cert_path`` — installed as
+  local certificate entries named by refname or CN, including the SSL
+  deep-inspection CA pair (which is just a local cert). Both the private key
+  and certificate are required.
 - ``FOS_PKI_LOCAL_CERT_PASS_FILES``: ``path;path;...`` — positionally paired
   with encrypted-key ``refname:key_path:cert_path`` entries; the contents
   are typed as ``set password``.
-- ``FOS_PKI_REMOTE_CERTS``: ``refname:path`` — remote certificates imported
-  with ``execute vpn certificate remote import tftp`` and named by their CN.
+- ``FOS_PKI_REMOTE_CERTS``: ``refname:path`` — remote certificates installed
+  in ``config vpn certificate remote`` and named by refname or CN.
 - ``FOS_PKI_CRLS``: ``refname:path`` — CRLs installed as ``config vpn
-  certificate crl`` entries with base64-encoded CRL bodies, named by
-  refname or file basename.
+  certificate crl`` entries with PEM contents when that tree is available,
+  otherwise imported over TFTP, named by refname or file basename.
 """
 
-import base64
 import os
 import re
 import shutil
@@ -37,13 +36,8 @@ import ssl
 from cli_commands import (
     CommandSequence,
     CommandSpec,
-    ConfigBlock,
-    EditBlock,
-    SessionLossAction,
     SetValue,
 )
-from common import FOSCliState
-
 from .base import Feature
 
 
@@ -53,9 +47,12 @@ LOCAL_CERT_PASS_FILES_ENV = "FOS_PKI_LOCAL_CERT_PASS_FILES"
 REMOTE_CERTS_ENV = "FOS_PKI_REMOTE_CERTS"
 CRLS_ENV = "FOS_PKI_CRLS"
 
-TFTP_PKI_DIRECTORY = "/tftpboot/pki"
 # The config tree moved back and forth between these names across releases.
-VPN_CERTIFICATE_CRL_SCOPES = ("vpn certificate crl", "certificate crl")
+VPN_CERTIFICATE_CRL_SCOPE = "vpn certificate crl"
+TFTP_PKI_DIRECTORY = "/tftpboot/pki"
+COMMAND_FAILURE_PATTERN = re.compile(
+    rb"(?mi)Unknown action|command (?:parse )?error|Command fail"
+)
 
 
 def _split_entries(variable, value):
@@ -104,30 +101,25 @@ def parse_ca_certs(value, variable=CA_CERTS_ENV):
 
 
 def parse_local_certs(value, variable=LOCAL_CERTS_ENV):
-    """Return ``(refname_or_None, key_path_or_None, cert_path)`` triples.
+    """Return ``(refname_or_None, key_path, cert_path)`` triples.
 
-    Entries are ``refname:key_path:cert_path`` or ``refname:cert_path``.
-    The refname field is always present; ``:key_path:cert_path`` implies
-    the certificate CN as the object name.
+    Entries are ``refname:key_path:cert_path``. The refname field is always
+    present; ``:key_path:cert_path`` implies the certificate CN as the object
+    name. Local certificates require their corresponding private key.
     """
     parsed = []
     for entry in _split_entries(variable, value):
         refname, rest = _split_refname(entry, variable)
         key_path, separator, cert_path = rest.partition(":")
-        if separator:
-            _require_path(variable, key_path)
-            _require_path(variable, cert_path)
-            parsed.append((refname, key_path, cert_path))
-        elif refname and os.path.exists(refname) and os.path.exists(rest):
+        if not separator:
             raise ValueError(
-                f"{variable}: entry '{entry}' looks like a bare key_path:"
-                "cert_path pair; a CN-implied pair must be spelled "
-                "':key_path:cert_path' and a named pair "
-                "'refname:key_path:cert_path'"
+                f"{variable}: entry '{entry}' must include private key and "
+                "certificate paths as 'refname:key_path:cert_path'; use "
+                "':key_path:cert_path' to imply the certificate CN"
             )
-        else:
-            _require_path(variable, rest)
-            parsed.append((refname, None, rest))
+        _require_path(variable, key_path)
+        _require_path(variable, cert_path)
+        parsed.append((refname, key_path, cert_path))
     return parsed
 
 
@@ -192,20 +184,18 @@ def read_pass_file(path):
 
 
 def read_crl_body(path):
-    """Return the CRL PEM file contents as base64 of the body bytes."""
+    """Return the CRL file contents for ``set crl``.
+
+    FortiOS documents the field as "Certificate Revocation List as a PEM
+    file": type the full PEM, headers included. Re-encoding the body a
+    second time is rejected by 7.4+ with return code -542.
+    """
     with open(path, "r", encoding="utf-8") as crl:
-        contents = crl.read()
-    match = re.search(
-        r"-----BEGIN [^-]+-----\n(.*?)-----END [^-]+-----",
-        contents,
-        re.DOTALL,
-    )
-    body = match.group(1) if match else contents
-    return base64.b64encode("".join(body.split()).encode("utf-8")).decode("ascii")
+        return crl.read()
 
 
 class InstallPkiCertificates(Feature):
-    """Install certificates and CRLs staged by the plugin before startup config.
+    """Install certificates and CRLs provided by the plugin before startup config.
 
     Must run after the factory baseline capture and before the user startup
     config so the config can reference the installed certificate names.
@@ -224,6 +214,11 @@ class InstallPkiCertificates(Feature):
         self._staging_directory = TFTP_PKI_DIRECTORY
         self._phase = "idle"
         self._crl_config = None
+        self._indexes = {"ca": 0, "local": 0, "remote": 0, "crl": 0}
+        self._seen_names = {"ca": set(), "local": set(), "remote": set(), "crl": set()}
+        self._current_item = None
+        self._config_failed = False
+        self._fallback_active = False
 
     def _pair_pass_files(self):
         """Pair pass files positionally with local entries that carry a key."""
@@ -233,28 +228,23 @@ class InstallPkiCertificates(Feature):
                 f"{LOCAL_CERTS_ENV}; cannot pair passwords"
             )
         paired = []
-        pass_index = 0
-        for refname, key_path, cert_path in self._local_entries:
-            if key_path is None:
-                paired.append((refname, key_path, cert_path, None))
-                continue
-            if pass_index >= len(self._pass_files):
-                paired.append((refname, key_path, cert_path, None))
-                continue
-            paired.append((refname, key_path, cert_path, self._pass_files[pass_index]))
-            pass_index += 1
-        if pass_index < len(self._pass_files):
-            raise ValueError(
-                f"{LOCAL_CERT_PASS_FILES_ENV} provides passwords for entries "
-                f"without private keys in {LOCAL_CERTS_ENV}"
-            )
+        for index, (refname, key_path, cert_path) in enumerate(self._local_entries):
+            pass_file = self._pass_files[index] if index < len(self._pass_files) else None
+            paired.append((refname, key_path, cert_path, pass_file))
         return paired
 
     def activate(self):
         if not self._blocks_ready():
             self.commander.feature_complete(self)
             return
-        self._phase = "stage"
+        version = self.vm.fos_version
+        if version is None:
+            raise RuntimeError(
+                "FortiOS version is unavailable; system-version must run "
+                "before pki-certificates"
+            )
+        self._crl_config = self._crl_config_from_major(version.major)
+        self._phase = "start"
         self._submit_next()
 
     def _blocks_ready(self):
@@ -264,141 +254,214 @@ class InstallPkiCertificates(Feature):
         return self._paired_locals
 
     def _submit_next(self):
-        if self._phase == "stage":
-            self._stage_import_files()
-            self._phase = "ca-imports"
-            self._submit_imports("ca-imports", self._ca_paths, "ca")
-            return
-        if self._phase == "ca-imports":
+        if self._phase == "start":
+            self._phase = "ca-certs"
+        if self._phase == "ca-certs":
+            if self._submit_next_ca_cert():
+                return
             self._phase = "local-certs"
-            self._submit_local_certs()
-            return
         if self._phase == "local-certs":
-            self._phase = "remote-imports"
-            self._submit_imports("remote-imports", self._remote_paths, "remote")
-            return
-        if self._phase == "remote-imports":
-            self._phase = "crl-detect"
-            self._submit_crl_detection()
-            return
-        if self._phase == "crl-detect":
+            if self._submit_next_local_cert():
+                return
+            self._phase = "remote-certs"
+        if self._phase == "remote-certs":
+            if self._submit_next_remote_cert():
+                return
             self._phase = "crl-config"
-            self._submit_crls()
-            return
+        if self._phase == "crl-config":
+            if self._submit_next_crl():
+                return
         self.commander.feature_complete(self)
 
-    def _stage_import_files(self):
-        """Copy CA and remote source files under collision-free TFTP names."""
-        if not (self._ca_paths or self._remote_paths):
-            return
-        os.makedirs(self._staging_directory, exist_ok=True)
-        for index, (_refname, path) in enumerate(self._ca_paths, start=1):
-            staged = os.path.join(self._staging_directory, f"pki-ca-{index:03d}.pem")
-            shutil.copyfile(path, staged)
-        for index, (_refname, path) in enumerate(self._remote_paths, start=1):
-            staged = os.path.join(self._staging_directory, f"pki-remote-{index:03d}.pem")
-            shutil.copyfile(path, staged)
+    def _next_entry(self, kind, entries):
+        index = self._indexes[kind]
+        if index >= len(entries):
+            return None
+        self._indexes[kind] += 1
+        return index, entries[index]
 
-    def _staged_name(self, index, kind):
-        return f"pki-{kind}-{index:03d}.pem"
+    def _begin_config_item(self, kind, name, path, block):
+        if name in self._seen_names[kind]:
+            self._logger.warning(
+                "Duplicate %s certificate name '%s'; last entry wins",
+                kind.upper() if kind == "ca" else kind,
+                name,
+            )
+        self._seen_names[kind].add(name)
+        self._current_item = (kind, name, path)
+        self._config_failed = False
+        self._fallback_active = False
+        self.commander.submit_block(self, block)
 
-    def _submit_imports(self, name, paths, kind):
-        if not paths:
-            self.on_block_complete()
-            return
-        commands = []
-        for index in range(1, len(paths) + 1):
-            commands.append(CommandSpec(
-                f"exe vpn certificate {kind} import tftp {self._staged_name(index, kind)} {self._tftp_server_ip}",
-                completion_states=(FOSCliState.CONFIRMATION,),
-                session_loss=SessionLossAction.CONTINUE,
+    @staticmethod
+    def _config_item_block(scope, name, children):
+        # A configuration attempt is deliberately best-effort: the feature
+        # must be able to inspect the result and fall back to the TFTP import
+        # path when a firmware release does not expose this config tree.  If
+        # these wrapper commands keep ``fail_on_error`` enabled, the commander
+        # raises before ``on_command_executed`` can record the failed config
+        # attempt and select the fallback.
+        def config_command(line):
+            return CommandSpec(line, capture_output=True, fail_on_error=False)
+
+        return CommandSequence(f"{scope}-{name}", [
+            config_command(f"config {scope}"),
+            config_command(f'edit "{name}"'),
+            *children,
+            config_command("next"),
+            config_command("end"),
+        ])
+
+    def _submit_next_ca_cert(self):
+        item = self._next_entry("ca", self._ca_paths)
+        if item is None:
+            return False
+        _index, (refname, path) = item
+        name = refname or read_certificate_cn(path)
+        with open(path, "r", encoding="utf-8") as certificate:
+            value = SetValue(
+                "ca", certificate.read(),
+                fail_on_error=False,
+                validate_prompt=False,
+            )
+        self._begin_config_item(
+            "ca", name, path,
+            self._config_item_block("vpn certificate ca", name, [value]),
+        )
+        return True
+
+    def _submit_next_remote_cert(self):
+        item = self._next_entry("remote", self._remote_paths)
+        if item is None:
+            return False
+        _index, (refname, path) = item
+        name = refname or read_certificate_cn(path)
+        with open(path, "r", encoding="utf-8") as certificate:
+            value = SetValue(
+                "remote", certificate.read(),
+                fail_on_error=False,
+                validate_prompt=False,
+            )
+        self._begin_config_item(
+            "remote", name, path,
+            self._config_item_block("vpn certificate remote", name, [value]),
+        )
+        return True
+
+    def _submit_next_local_cert(self):
+        item = self._next_entry("local", self._local_with_password())
+        if item is None:
+            return False
+        _index, (refname, key_path, cert_path, pass_file) = item
+        name = refname or read_certificate_cn(cert_path)
+        lines = []
+        if pass_file:
+            lines.append(CommandSpec(
+                f"set password {read_pass_file(pass_file)}",
+                capture_output=True,
+                fail_on_error=False,
             ))
-        self.commander.submit_block(self, CommandSequence(name, commands))
+        with open(key_path, "r", encoding="utf-8") as key:
+            lines.append(SetValue(
+                "private-key", key.read(),
+                fail_on_error=False,
+                validate_prompt=False,
+            ))
+        with open(cert_path, "r", encoding="utf-8") as cert:
+            lines.append(SetValue(
+                "certificate", cert.read(),
+                fail_on_error=False,
+                validate_prompt=False,
+            ))
+        self._begin_config_item(
+            "local", name, cert_path,
+            self._config_item_block("vpn certificate local", name, lines),
+        )
+        return True
 
-    def _submit_local_certs(self):
-        paired = self._local_with_password()
-        if not paired:
-            self.on_block_complete()
-            return
-        warnings = []
-        seen = {}
-        blocks = []
-        for refname, key_path, cert_path, pass_file in paired:
-            cn = read_certificate_cn(cert_path)
-            name = refname or cn
-            if name in seen:
-                warnings.append(
-                    f"Duplicate local certificate name '{name}'; last entry wins"
-                )
-            seen[name] = True
-            lines = []
-            if key_path:
-                with open(key_path, "r", encoding="utf-8") as key:
-                    lines.append(SetValue("private-key", key.read()))
-            with open(cert_path, "r", encoding="utf-8") as cert:
-                lines.append(SetValue("certificate", cert.read()))
-            if pass_file:
-                lines.append(f"set password {read_pass_file(pass_file)}")
-            blocks.append(ConfigBlock("vpn certificate local", [
-                EditBlock(f'"{name}"', lines),
-            ]))
-        for warning in warnings:
-            self._logger.warning(warning)
-        self.commander.submit_block(self, CommandSequence("local-certs", blocks))
+    def _submit_next_crl(self):
+        item = self._next_entry("crl", self._crl_paths)
+        if item is None:
+            return False
+        _index, (refname, path) = item
+        name = refname or self._crl_basename(path)
+        if self._crl_config is None:
+            self._current_item = ("crl", name, path)
+            self._config_failed = True
+            self._submit_tftp_fallback()
+            return True
+        value = SetValue("crl", read_crl_body(path))
+        self._begin_config_item(
+            "crl", name, path,
+            self._config_item_block(VPN_CERTIFICATE_CRL_SCOPE, name, [value]),
+        )
+        return True
 
-    def _submit_crl_detection(self):
-        if not self._crl_paths:
-            self.on_block_complete()
-            return
-        self.commander.submit_block(self, CommandSequence("crl-detect", [
-            CommandSpec("get system status", capture_output=True, suppress_output=True),
+    def _submit_tftp_fallback(self):
+        kind, name, path = self._current_item
+        if kind == "local":
+            raise RuntimeError(
+                f"Failed to install local certificate '{name}' through config; "
+                "TFTP cannot import separate private-key and certificate files"
+            )
+        filename = name
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", filename):
+            filename = f"pki-{kind}-{self._indexes[kind]:03d}"
+        os.makedirs(self._staging_directory, exist_ok=True)
+        shutil.copyfile(path, os.path.join(self._staging_directory, filename))
+        self._fallback_active = True
+        self.commander.submit_block(self, CommandSequence(f"{kind}-tftp-fallback", [
+            CommandSpec(
+                f"execute vpn certificate {kind} import tftp "
+                f"pki/{filename} {self._tftp_server_ip}",
+                capture_output=True,
+                # Let on_command_executed produce the object-specific error
+                # that identifies both failed installation paths.
+                fail_on_error=False,
+            ),
         ]))
-
-    def _submit_crls(self):
-        if not self._crl_paths:
-            self.on_block_complete()
-            return
-        warnings = []
-        seen = {}
-        blocks = []
-        for refname, path in self._crl_paths:
-            crl_base64 = read_crl_body(path)
-            name = refname or self._crl_basename(path)
-            if name in seen:
-                warnings.append(f"Duplicate CRL name '{name}'; last entry wins")
-            seen[name] = True
-            blocks.append(ConfigBlock(self._crl_config, [
-                EditBlock(f'"{name}"', [f"set crl {crl_base64}"]),
-            ]))
-        for warning in warnings:
-            self._logger.warning(warning)
-        self.commander.submit_block(self, CommandSequence("crl-config", blocks))
 
     @staticmethod
     def _crl_basename(path):
         return os.path.splitext(os.path.basename(path))[0]
 
     def on_command_executed(self, command, state):
-        if self._phase == "crl-detect" and command.spec.capture_output:
-            self._crl_config = self._crl_config_from(bytes(command.output))
-            if self._crl_config is None:
-                raise RuntimeError(
-                    "Could not determine the CRL config tree from get system status"
-                )
+        if not command.spec.capture_output or not COMMAND_FAILURE_PATTERN.search(
+            bytes(command.output)
+        ):
+            return
+        if self._fallback_active:
+            kind, name, _path = self._current_item
+            raise RuntimeError(
+                f"Failed to install {kind} PKI object '{name}' through config "
+                "and TFTP"
+            )
+        if self._current_item is not None:
+            self._config_failed = True
 
     @staticmethod
-    def _crl_config_from(output):
-        text = output.decode(errors="replace")
-        version = re.search(r"Version:\s*v?(\d+)\.", text)
-        major = int(version.group(1)) if version else None
-        if major is None:
-            return None
-        # ``config certificate crl`` was the tree before FortiOS 7.0.
-        if major < 7:
-            return VPN_CERTIFICATE_CRL_SCOPES[1]
-        return VPN_CERTIFICATE_CRL_SCOPES[0]
+    def _crl_config_from_major(major):
+        # ``config vpn certificate crl`` exists from 7.0; earlier releases
+        # expose no CRL CLI at all.
+        return VPN_CERTIFICATE_CRL_SCOPE if major >= 7 else None
 
     def on_block_complete(self):
+        if self._fallback_active:
+            kind, name, _path = self._current_item
+            self._logger.warning(
+                "Installed %s PKI object '%s' through TFTP after config installation failed",
+                kind,
+                name,
+            )
+            self._fallback_active = False
+            self._config_failed = False
+            self._current_item = None
+            self._submit_next()
+            return
+        if self._config_failed:
+            self._submit_tftp_fallback()
+            return
+        self._current_item = None
         self._submit_next()
 
     @property
