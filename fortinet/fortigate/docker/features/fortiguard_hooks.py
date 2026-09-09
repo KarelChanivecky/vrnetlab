@@ -1,10 +1,11 @@
 """FortiGuard fortiguard-hooks bootstrap feature."""
 
 import os
+import re
 
 from cli_commands import CommandSequence, CommandSpec, ConfigBlock
 
-from .base import StaticFeature
+from .base import Feature, StaticFeature
 
 
 def fortiguard_hooks_enabled():
@@ -14,34 +15,73 @@ def fortiguard_hooks_enabled():
 class ConfigureFortiGuardHooks(StaticFeature):
     _DIAG_1_COMMAND = "diagnostic-1"
     _DIAG_2_COMMAND = "diagnostic-2"
-    _UNKNOWN_ACTION = b"Unknown action 0"
+    _COMMAND_FAILURE = re.compile(
+        rb"(?mi)Unknown action|command (?:parse )?error|Command fail"
+    )
 
     def __init__(self, vm, commander):
-        blocks = []
-        if fortiguard_hooks_enabled():
-            blocks = [
-                CommandSequence("hooks-guard", [
-                    CommandSpec(
-                        self._DIAG_2_COMMAND,
-                        capture_output=True,
-                    ),
-                ]),
-                ConfigBlock("system fortiguard", [
-                    CommandSpec("set fortiguard-anycast disable"),
-                    CommandSpec("set fortiguard-server-location automatic"),
-                ]),
-            ]
-        super().__init__(vm, commander, "fortiguard-hooks", blocks)
+        self._enabled = fortiguard_hooks_enabled()
+        super().__init__(vm, commander, "fortiguard-hooks", ())
+
+    def activate(self):
+        if not self._enabled:
+            self.commander.feature_complete(self)
+            return
+        self._blocks = [
+            CommandSequence("hooks-guard", [
+                CommandSpec(
+                    self._DIAG_2_COMMAND,
+                    capture_output=True,
+                    suppress_output=True,
+                ),
+            ]),
+            self.fortiguard_block(getattr(self.vm, "fos_version", None)),
+        ]
+        self._submit_next()
+
+    @staticmethod
+    def fortiguard_block(version):
+        update_server_location = (
+            "any" if getattr(version, "major", None) == 6 else "automatic"
+        )
+        return ConfigBlock("system fortiguard", [
+            "set fortiguard-anycast disable",
+            "unset sdns-server-ip",
+            "set fortiguard-server-location automatic",
+            f"set update-server-location {update_server_location}",
+        ])
 
     def on_command_executed(self, command, state):
-        if (
-            command.spec.line == self._DIAG_2_COMMAND
-            and self._UNKNOWN_ACTION in bytes(command.output)
-        ):
+        if command.spec.line not in (self._DIAG_2_COMMAND, self._DIAG_1_COMMAND):
+            return
+        failed = self._COMMAND_FAILURE.search(bytes(command.output)) is not None
+        if command.spec.line == self._DIAG_2_COMMAND and failed:
             self.commander.submit_block(self, CommandSequence(
                 "hooks-guard-fallback",
                 [CommandSpec(
                     self._DIAG_1_COMMAND,
                     capture_output=True,
+                    suppress_output=True,
                 )],
             ))
+
+
+class ReapplyFortiGuardHooks(Feature):
+    """Reapply fortiguard-hooks FortiGuard settings after the license reboot."""
+
+    def __init__(self, vm, commander):
+        super().__init__(vm, commander, "fortiguard-hooks-after-license")
+
+    def activate(self):
+        if not fortiguard_hooks_enabled():
+            self.commander.feature_complete(self)
+            return
+        self.commander.submit_block(
+            self,
+            CommandSequence("fortiguard-hooks-after-license", [
+                ConfigureFortiGuardHooks.fortiguard_block(
+                    getattr(self.vm, "fos_version", None)
+                ),
+                CommandSpec("execute update-now"),
+            ]),
+        )

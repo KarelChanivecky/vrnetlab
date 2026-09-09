@@ -13,6 +13,7 @@ from common import TRACE_LEVEL
 DEFAULT_BUFFER_LIMIT_BYTES = 1024 * 1024
 BUFFER_LIMIT_ENV = "FOS_TERMINAL_BUFFER_LIMIT_BYTES"
 READ_POLL_SECONDS = 0.001
+RAW_SERIAL_LOG_ENV = "FOS_LOG_RAW_SERIAL"
 
 
 def terminal_buffer_limit_bytes():
@@ -230,7 +231,11 @@ class Terminal:
                 self._buffer.extend(data)
                 self._enforce_buffer_limit()
                 received.extend(data)
-                self._logger.log(TRACE_LEVEL - 1, f"buffer: {self._buffer}")
+                if (
+                    os.getenv(RAW_SERIAL_LOG_ENV, "").lower() in ("1", "true", "yes")
+                    and self._output_suppression_depth == 0
+                ):
+                    self._logger.log(TRACE_LEVEL - 1, f"buffer: {self._buffer}")
                 result = self._match(regex_list)
                 continue
 
@@ -281,13 +286,9 @@ class Terminal:
             self._reader.start()
 
     def _read_forever(self, stop_reader, read_queue):
-        read = getattr(self._connection, "read_blocking", None)
-        if read is None:
-            read = self._connection.read_very_eager
-
         while not stop_reader.is_set():
             try:
-                data = read()
+                data = self._connection.read_very_eager()
             except Exception as error:
                 if not stop_reader.is_set():
                     self._logger.exception("Terminal reader failed")

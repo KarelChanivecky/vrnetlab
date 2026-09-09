@@ -22,6 +22,7 @@ class FOSCliState(IntEnum):
     CONFIRMATION = auto()
     CHANGE_PASSWORD_CONFIRM = auto()
     MORE_PROMPT = auto()
+    MULTILINE_PROMPT = auto()
     UNKNOWN = auto()  # Non-patterns from here on.
     TN_TIMEOUT = auto()
 
@@ -60,6 +61,7 @@ FOS_CLI_STATE_PATTERNS[FOSCliState.CURRENT_PASSWORD.value] = (
 FOS_CLI_STATE_PATTERNS[FOSCliState.CONFIRMATION.value] = rb"(?mi)Do you want to continue\?"
 FOS_CLI_STATE_PATTERNS[FOSCliState.CHANGE_PASSWORD_CONFIRM.value] = rb"(?mi)^Confirm Password:[ \t]*"
 FOS_CLI_STATE_PATTERNS[FOSCliState.MORE_PROMPT.value] = rb"--More--\s*"
+FOS_CLI_STATE_PATTERNS[FOSCliState.MULTILINE_PROMPT.value] = rb"(?m)^>[ \t]*$"
 
 DEF_POLICY_COMPLIANT_PASSWORD = "FortinetFOS1!"
 DEFAULT_USERNAME = "admin"
