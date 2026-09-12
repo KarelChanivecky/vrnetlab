@@ -52,6 +52,10 @@ signal.signal(signal.SIGTERM, handle_SIGTERM)
 signal.signal(signal.SIGCHLD, handle_SIGCHLD)
 
 TRACE_LEVEL_NUM = TRACE_LEVEL
+# Appended to once per main-loop iteration; fos_healthcheck.py watches this
+# file to tell a slow bootstrap from a wedged launcher. Keep in sync with the
+# HEARTBEAT_FILE default in fos_healthcheck.py.
+HEARTBEAT_FILE = os.getenv("FOS_HEARTBEAT_FILE", "/healthbeat")
 logging.addLevelName(TRACE_LEVEL_NUM, "\x1b[1;35m\tTRACE\x1b[0m")
 LOG_LEVEL_NAMES = {
     "TRACE": TRACE_LEVEL_NUM,
@@ -302,11 +306,27 @@ class FortiOS_vm(vrnetlab.VM):
         return True
 
     def work(self):
+        self._write_heartbeat()
         super().work()
         if self.running:
             self._file_watcher.poll()
             if not self.driver.ready:
                 self.bootstrap_spin()
+
+    def _write_heartbeat(self):
+        """Append one byte to the healthcheck heartbeat file.
+
+        ``fos_healthcheck.py`` blocks in "starting" as long as this file
+        keeps growing, so a slow but progressing bootstrap never trips the
+        Docker unhealthy threshold. A wedged launcher stops beating and the
+        probe reports failure. Best-effort: a heartbeat write must never
+        take down the main loop.
+        """
+        try:
+            with open(HEARTBEAT_FILE, "a") as heartbeat_handle:
+                heartbeat_handle.write("\n")
+        except OSError:
+            self.logger.debug("Failed to write healthcheck heartbeat", exc_info=True)
 
     def connect_serial_console(self):
         try:

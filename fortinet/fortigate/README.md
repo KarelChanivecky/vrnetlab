@@ -85,6 +85,8 @@ applies the intended startup config.
 | `FOS_DISK_SPECS` | unset | comma-separated `qemu-img create` sizes, for example `10g` or `10g,10g` | Adds extra virtio disks. One disk becomes the FortiGate log disk. Additional disks are formatted during bootstrap; the second disk is expected to become WAN optimization storage on FortiOS versions that support it. |
 | `FOS_DEBUG_FEATURE` | unset | feature name | Runs bootstrap only through the named feature, then skips later features. Public feature order: `disk-format`, `admin`, `system-version`, `management`, `bootstrap-dns`, `fortiguard-hooks`, `setup-license`, `fortiguard-hooks-after-license`, `default-config`, `management-after-license`, `license-validation`, `fortitoken-provisioning`, `pki-certificates`, `management-vrf`, `capture-config`, `startup-config`. |
 | `FOS_EXIT_ON_BOOTSTRAP_ERROR` | `true` | `true`, `false` | Stops the launcher with a nonzero exit status when a bootstrap feature raises an error. Set to `false` only for manual recovery or diagnostics; the launcher logs the first error, leaves the VM running, and halts bootstrap without reporting startup complete. |
+| `FOS_HEALTHCHECK_STALL_SECONDS` | `90` | seconds | How long the Docker healthcheck probe waits for a launcher heartbeat before reporting failure. Only relevant for diagnostics; the launcher must stay responsive within this window. See [Container Healthcheck](#container-healthcheck). |
+| `FOS_HEARTBEAT_FILE` | `/healthbeat` | container path | File the launcher appends one byte to on every main-loop iteration; the healthcheck probe watches it to distinguish a slow bootstrap from a wedged launcher. |
 | `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` | `120` | seconds | Maximum time to poll `get system status` for license status to leave `Pending` after license installation. |
 | `FOS_LOG_LEVEL` | `DEBUG` | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or numeric Python log level | Sets launcher log verbosity. |
 | `FOS_MGMT_DNS_PRIMARY` | `1.1.1.1` | IPv4 address | Sets the primary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. |
@@ -316,6 +318,36 @@ FOS_DISK_SPECS unset      -> no configured storage usage
 FOS_DISK_SPECS="10g"     -> order 1 usage log
 FOS_DISK_SPECS="10g,10g" -> order 1 usage log, order 2 usage wanopt
 ```
+
+Disk formatting during bootstrap adds roughly a minute per additional
+drive to the time the container stays `starting`. The healthcheck absorbs
+this automatically — see [Container Healthcheck](#container-healthcheck).
+
+## Container Healthcheck
+
+The image's `HEALTHCHECK` runs `/fos_healthcheck.py`, which replaces the
+plain `/health`-file check from upstream vrnetlab. The problem it solves:
+FortiOS bootstrap takes several minutes, and with Docker's default probe
+timing (30 s interval, 3 retries) the container flapped
+`starting -> unhealthy (1 starting) -> healthy (0 running)` purely
+because the third probe landed before bootstrap finished.
+
+How it works:
+
+- The launcher appends one byte to `/healthbeat` on every main-loop
+  iteration.
+- While `/health` still says the VM is starting, the probe blocks,
+  waiting for those heartbeat bytes. Docker keeps a container in
+  `starting` while a probe run is in flight, so a slow-but-progressing
+  bootstrap holds `starting` for as long as it likes — no fixed start
+  period to size against disk count or platform.
+- If no new heartbeat byte arrives for `FOS_HEALTHCHECK_STALL_SECONDS`
+  (default 90 s), the launcher is wedged: the probe exits 1 and Docker
+  marks the container unhealthy after `--retries` strikes.
+- Once bootstrap has completed, the probe defers to the classic check:
+  `0 running` exits 0 immediately, `1 VM failed - restarting` exits 1,
+  so a VM that dies after startup still goes unhealthy on the normal
+  probe schedule (~90 s).
 
 ## Saving Config
 
