@@ -237,15 +237,15 @@ Current bootstrap stages are:
 - `management`: configures `port1`, FortiGuard interface selection, and the
   management route for static management addressing
 - `bootstrap-dns`: temporarily sets DNS for license/bootstrap reachability
-- `fortiguard-hooks`: applies the hooks guard and FortiGuard settings used by
-  fortiguard hooks
+- `fortiguard-hooks`: applies the optional `DIAG_2`/`DIAG_1` guard commands and
+  the FortiGuard settings used when the hooks are enabled
 - `setup-license`: restores `/tftpboot/appliance.lic` over TFTP and handles reboot
 - `default-config`: applies launcher-owned defaults such as `admin-scp` and the
   final hostname
 - `management-after-license`: reapplies management after license restore because
   FortiOS can remove routes or drop sessions when registration state changes
-- `fortiguard-hooks-after-license`: reapplies the fortiguard-hooks FortiGuard settings
-  after the license reboot whenever fortiguard-hooks mode is enabled
+- `fortiguard-hooks-after-license`: reapplies the FortiGuard hook settings after
+  the license reboot whenever `FOS_FORTIGUARD_HOOKS` is enabled
 - `license-validation`: polls `get system status` until license status is no longer
   `Pending`, or until the configured timeout
 - `management-vrf`: moves management into VRF 1 when supported, or narrows

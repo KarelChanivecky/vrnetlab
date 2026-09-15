@@ -15,7 +15,7 @@ class ApplyStartupConfig(StaticFeature):
 
 
 def filter_startup_config_blocks(blocks, logger):
-    """Skip startup DNS configuration that conflicts with fortiguard-hooks DNS."""
+    """Skip startup DNS configuration that conflicts with FortiGuard hook DNS."""
     if not (
         "FOS_FORTIGUARD_HOOKS" in os.environ
         and (
