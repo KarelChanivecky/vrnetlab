@@ -89,8 +89,8 @@ applies the intended startup config.
 | `FOS_HEARTBEAT_FILE` | `/healthbeat` | container path | File the launcher appends one byte to on every main-loop iteration; the healthcheck probe watches it to distinguish a slow bootstrap from a wedged launcher. |
 | `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` | `120` | seconds | Maximum time to poll `get system status` for license status to leave `Pending` after license installation. |
 | `FOS_LOG_LEVEL` | `DEBUG` | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or numeric Python log level | Sets launcher log verbosity. |
-| `FOS_MGMT_DNS_PRIMARY` | `1.1.1.1` | IPv4 address | Sets the primary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. |
-| `FOS_MGMT_DNS_SECONDARY` | `8.8.8.8` | IPv4 address | Sets the secondary DNS server used temporarily during bootstrap. The launcher unsets it before baseline capture and startup config application. The legacy misspelling `FOS_MGMG_DNS_SECONDARY` remains accepted. |
+| `FOS_MGMT_DNS_PRIMARY` | `1.1.1.1` | IPv4 address | Sets the primary DNS server configured during bootstrap for license and FortiGuard reachability. The setting persists after bootstrap; the launcher does not remove it. |
+| `FOS_MGMT_DNS_SECONDARY` | `8.8.8.8` | IPv4 address | Sets the secondary DNS server configured during bootstrap. Like the primary, it persists after bootstrap. The legacy misspelling `FOS_MGMG_DNS_SECONDARY` remains accepted. |
 | `FOS_NO_ENC_CONFIG` | `false` | `true`, `false` | When `true`, ignores ENC-only changes on entries that already exist in the baseline. New entries and entries with other changes retain their encrypted fields. |
 | `FOS_ONBOARDING` | `false` | `true`, `false` | When `true`, disables the HTTPS redirect and automatic-upgrade setup warning in the default FortiOS GUI configuration. |
 | `FOS_PKI_CA_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Trusts CA certificates by typing the PEM into `config vpn certificate ca`. The object is named after the refname when given, otherwise the certificate CN. |
@@ -155,6 +155,11 @@ end
 
 The importer validates basic `config` / `edit` / `next` / `end` nesting and
 fails startup on malformed structure.
+
+The bootstrap DNS servers (`FOS_MGMT_DNS_PRIMARY` / `FOS_MGMT_DNS_SECONDARY`)
+persist through startup config application. When `FOS_FORTIGUARD_HOOKS` is set
+together with either DNS variable, a `config system dns` block in the startup
+config is skipped with a warning so it cannot override the launcher's DNS.
 
 ## Default Startup Configuration
 
@@ -221,8 +226,9 @@ end
 ```
 
 The DNS servers selected by `FOS_MGMT_DNS_PRIMARY` and
-`FOS_MGMT_DNS_SECONDARY` are configured only while the launcher is bootstrapping
-and are then unset. They are not part of the final baseline.
+`FOS_MGMT_DNS_SECONDARY` are configured during bootstrap and are not removed
+afterwards; they persist into the captured baseline and the final
+configuration.
 
 When a license is installed, the launcher reapplies management configuration
 after the license reboot and attempts to place `port1` and route `9999` in VRF
