@@ -5,6 +5,7 @@ import json
 import re
 import secrets
 import stat
+import time
 import uuid
 from pathlib import Path
 
@@ -15,12 +16,30 @@ from .base import Feature
 
 
 class ConfigSaveFeature(Feature):
-    """Capture the bootstrap baseline and a later file-triggered config delta."""
+    """Capture the bootstrap baseline and a later file-triggered config delta.
+
+    get-config wire protocol (host: ``fclab get-config``):
+
+    * The host writes ``{"id": "<request-id>"}`` atomically to the trigger
+      path. Any trigger transition (created or modified) is a new request.
+    * This feature writes one JSON status record **per request id** under
+      ``<status_dir>/<id>.json``, atomically, with
+      ``{"id", "status": pending|busy|success|error, "output"?, "error"?}``.
+    * The host polls only its own record and never judges a capture by the
+      config file's size, so a stale ``current.conf`` can never satisfy a
+      new request.
+    """
 
     BASELINE_PATH = "/tmp/initial.conf"
     CURRENT_PATH = "/config/current.conf"
     TRIGGER_PATH = "/get-config"
-    STATUS_PATH = "/config/get-config.status.json"
+    STATUS_DIR = "/config/get-config.status.d"
+    INVALID_ID = "invalid"
+    # Records a live host still needs are younger than its 60 s deadline;
+    # sweep only files older than this so a concurrent request's record is
+    # never deleted out from under it.
+    STATUS_SWEEP_SECONDS = 120.0
+    REQUEST_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
     ASYNC_STATUS_PATTERNS = (
         re.compile(r"System file integrity .*check failed!"),
         re.compile(r"\*ATTENTION\*: License registration status changed.*"),
@@ -28,14 +47,14 @@ class ConfigSaveFeature(Feature):
 
     def __init__(self, vm, commander, baseline_path=BASELINE_PATH,
                  current_path=CURRENT_PATH, trigger_path=TRIGGER_PATH,
-                 status_path=None):
+                 status_dir=None):
         super().__init__(vm, commander, "capture-config")
         self._baseline_path = baseline_path
         self._current_path = current_path
         self._trigger_path = trigger_path
-        self._status_path = status_path or (
-            self.STATUS_PATH if str(current_path) == self.CURRENT_PATH
-            else Path(current_path).with_name("get-config.status.json")
+        self._status_dir = status_dir or (
+            Path(self.STATUS_DIR) if str(current_path) == self.CURRENT_PATH
+            else Path(current_path).with_name("get-config.status.d")
         )
         self._stage = "baseline"
         self._request_id = None
@@ -59,20 +78,33 @@ class ConfigSaveFeature(Feature):
         ))
 
     def on_file_detected(self, path):
+        self._handle_request(path)
+
+    def on_file_modified(self, path):
+        # The watcher snapshots before running callbacks, so a trigger the
+        # host re-creates while this callback is still in flight arrives as
+        # "modified" on the next poll — that is a new request, not a no-op.
+        self._handle_request(path)
+
+    def _handle_request(self, path):
         try:
             request_id = self._read_request_id(path)
         except FileNotFoundError:
             return
         except (OSError, ValueError, json.JSONDecodeError) as error:
-            self._write_status_safely(None, "error", str(error))
+            # The request id is unknown, so the record goes to a fixed name.
+            self._write_status_safely(self.INVALID_ID, "error", str(error))
             self._consume_trigger(path)
             return
 
         if not self.commander.ready or self.commander.busy:
             self.commander.logger.warning("get-config ignored while the CLI is busy")
-            self._write_status_safely(request_id, "error", "CLI scheduler is busy")
-            self._consume_trigger(path)
+            self._write_status_safely(request_id, "busy")
+            self._consume_trigger(path, request_id)
             return
+        # A fresh request is being accepted: stale records from finished
+        # requests can go (age-guarded — see _sweep_status_dir).
+        self._sweep_status_dir()
         self._write_status_safely(request_id, "pending")
         try:
             Path(self._current_path).unlink()
@@ -84,7 +116,7 @@ class ConfigSaveFeature(Feature):
                 "error",
                 f"Unable to remove stale output: {error}",
             )
-            self._consume_trigger(path)
+            self._consume_trigger(path, request_id)
             return
         self._stage = "current"
         self._request_id = request_id
@@ -97,7 +129,7 @@ class ConfigSaveFeature(Feature):
                 "error",
                 f"Serial reconnect failed: {error}",
             )
-            self._consume_trigger(path)
+            self._consume_trigger(path, request_id)
             return
         if not self.commander.enqueue_runtime_feature(self):
             self._write_status_safely(
@@ -105,10 +137,10 @@ class ConfigSaveFeature(Feature):
                 "error",
                 "CLI scheduler became busy",
             )
-            self._consume_trigger(path)
+            self._consume_trigger(path, request_id)
             return
         # Consume only after reconnect and enqueue have both succeeded.
-        self._consume_trigger(path)
+        self._consume_trigger(path, request_id)
 
     def on_command_executed(self, command, state):
         config = self.clean_show_output(bytes(command.output))
@@ -213,21 +245,34 @@ class ConfigSaveFeature(Feature):
         if not raw:
             # Backward-compatible touch trigger. New clients should send an ID
             # and validate that same ID in the status document.
-            return str(uuid.uuid4())
+            return uuid.uuid4().hex
         request = json.loads(raw)
         request_id = request.get("id") if isinstance(request, dict) else None
-        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", request_id):
+        if (
+            not isinstance(request_id, str)
+            or not self.REQUEST_ID_RE.fullmatch(request_id)
+            # The id derives a per-id record filename; dot-names escape.
+            or request_id in (".", "..")
+        ):
             raise ValueError("get-config request must contain a valid id")
         return request_id
 
+    def _status_path(self, request_id):
+        """Return the record file for one request id (creating the dir)."""
+        directory = Path(self._status_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"{request_id}.json"
+
     def _write_status(self, request_id, status, error=None):
+        if request_id is None:
+            request_id = self.INVALID_ID
         document = {"id": request_id, "status": status}
         if status == "success":
             document["output"] = Path(self._current_path).name
         if error:
             document["error"] = error
         self.atomic_write(
-            self._status_path,
+            self._status_path(request_id),
             (json.dumps(document, sort_keys=True) + "\n").encode(),
         )
 
@@ -242,8 +287,66 @@ class ConfigSaveFeature(Feature):
                 status_error,
             )
 
-    def _consume_trigger(self, path):
+    def _sweep_status_dir(self):
+        """Drop status records older than any live host's deadline.
+
+        Runs only on the accepted path (a busy reply must not prune a
+        concurrent request's records) and only removes plain files past
+        STATUS_SWEEP_SECONDS, so a record another host is still polling is
+        never touched. A missing dir is fine: nothing has been accepted yet
+        since the container started.
+        """
+        directory = Path(self._status_dir)
         try:
+            entries = list(directory.iterdir())
+        except FileNotFoundError:
+            return
+        except OSError:
+            self.commander.logger.warning(
+                "Unable to sweep get-config status dir %s", directory
+            )
+            return
+        cutoff = time.time() - self.STATUS_SWEEP_SECONDS
+        for entry in entries:
+            try:
+                if not entry.is_file():
+                    continue
+                if entry.stat().st_mtime >= cutoff:
+                    continue
+                entry.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                self.commander.logger.warning(
+                    "Unable to remove stale get-config status record %s", entry
+                )
+
+    def _consume_trigger(self, path, request_id=None):
+        """Unlink the trigger, but only if it is still *this* request's.
+
+        A stale accepted callback can sit in serial-reconnect retries for up
+        to a minute; by the time it gets here the host may already have
+        written a fresh trigger for a new request. Compare-before-unlink so
+        the new request's trigger survives.
+        """
+        try:
+            if request_id is not None:
+                try:
+                    raw = path.read_text(encoding="utf-8").strip()
+                except FileNotFoundError:
+                    raw = ""
+                if raw:
+                    try:
+                        request = json.loads(raw)
+                        current = request.get("id") if isinstance(request, dict) else None
+                    except json.JSONDecodeError:
+                        current = None
+                    if current != request_id:
+                        self.commander.logger.info(
+                            "get-config trigger already replaced; leaving it"
+                            " for the newer request"
+                        )
+                        return
             path.unlink()
         except FileNotFoundError:
             pass

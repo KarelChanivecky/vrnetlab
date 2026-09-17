@@ -262,8 +262,17 @@ Current bootstrap stages are:
 - `startup-config`: imports the user-supplied startup config
 
 `FeatureFileWatcher` polls watched feature paths after bootstrap. Today the
-main runtime feature is config capture: touching `/get-config` enqueues the
-capture feature after the launcher reconnects to the serial console.
+main runtime feature is config capture: writing a request to `/get-config`
+enqueues the capture feature after the launcher reconnects to the serial
+console. A trigger created *or modified* between polls is a new request
+(`on_file_detected` and `on_file_modified` share one handler), so a client
+that re-writes the trigger while an earlier capture is still running is not
+silently dropped. Each request is answered by one JSON status record per
+request id under `/config/get-config.status.d/<id>.json`
+(`{"id", "status": pending|success|busy|error, "output"?, "error"?}`),
+written atomically; records older than 120 s are swept when a new request
+is accepted. An empty trigger (a human `touch`) still works and gets a
+generated id. See the `fortigate/README.md` "Saving Config" section.
 
 Bootstrap feature errors are fatal by default. Set
 `FOS_EXIT_ON_BOOTSTRAP_ERROR=false` to log the first feature error, leave the

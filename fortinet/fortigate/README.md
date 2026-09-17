@@ -357,15 +357,45 @@ How it works:
 
 ## Saving Config
 
-Touch `/get-config` inside a running container to ask the launcher to capture the
-current FortiOS config:
+Ask the launcher to capture the current FortiOS config by writing a request
+to `/get-config` inside a running container:
 
 ```bash
-docker exec clab-<lab>-<node> touch /get-config
+docker exec -i clab-<lab>-<node> sh -c \
+  'cat > /get-config.incoming && mv /get-config.incoming /get-config' <<<'{"id": "abc123"}'
 ```
 
-The launcher consumes the trigger file when it detects it. Creating the file
-requests a capture; later modification or deletion of that file does not.
+The trigger carries a request id (1–128 characters of
+`A-Za-z0-9._-`; clients use a uuid4 hex). The launcher consumes the trigger
+and answers with one JSON status record **per request id**, written
+atomically under:
+
+```text
+/config/get-config.status.d/<id>.json
+```
+
+with body `{"id": "<id>", "status": "pending" | "success" | "busy" | "error",
+"output"?: "<config filename>", "error"?: "<message>"}`. A waiting client
+polls its own record only, so a previous capture's output can never satisfy
+a new request. Statuses:
+
+- `pending` — accepted; the capture is queued or running.
+- `success` — the config below is freshly rendered and stable to read.
+- `busy` — the CLI scheduler was mid-capture; the trigger was still
+  consumed. Re-issue with a **fresh id** (the busy request was rejected).
+- `error` — the request was rejected (unusable id, stale output could not
+  be removed, serial reconnect failed); `error` carries the reason.
+
+A trigger created *or modified* between watcher polls is a new request, so
+a client that re-writes the trigger while an earlier capture runs gets its
+own record instead of a silently dropped request. A trigger consumed by a
+stale earlier request is left in place when it already carries a newer id
+(compare-before-unlink), so the newer client is still served.
+
+An empty trigger — a human `touch /get-config` — still requests a capture;
+it is answered under a generated id, so watch the directory listing of
+`/config/get-config.status.d/` for the record. Records older than 120
+seconds are swept when a new request is accepted.
 
 The launcher reconnects to the serial console, runs `show`, compares the result
 with the baseline captured before startup config application, and writes the
