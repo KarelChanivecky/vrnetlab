@@ -187,4 +187,3 @@ if __name__ == "__main__":
 
     vr = AOSCX(args.hostname, args.username, args.password, args.connection_mode)
     vr.start()
-

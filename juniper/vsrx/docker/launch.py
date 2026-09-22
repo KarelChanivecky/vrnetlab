@@ -7,7 +7,6 @@ import re
 import signal
 import subprocess
 import sys
-import uuid
 
 import vrnetlab
 
@@ -88,8 +87,6 @@ class VSRX_vm(vrnetlab.VM):
 
         self.startup_config()
 
-        # generate UUID to attach
-        self.qemu_args.extend(["-uuid", str(uuid.uuid4())])
         # mount config disk with startup config (juniper.conf)
         self.qemu_args.extend(
             [

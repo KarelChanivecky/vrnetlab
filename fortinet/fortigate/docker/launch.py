@@ -5,7 +5,6 @@ import os
 import re
 import signal
 import sys
-import uuid
 
 import vrnetlab
 
@@ -55,7 +54,6 @@ class FortiOS_vm(vrnetlab.VM):
         self.num_nics = 12
         self.nic_type = "virtio-net-pci"
         self.highest_port = 0
-        self.qemu_args.extend(["-uuid", os.getenv("FORTIGATE_UUID") or str(uuid.uuid4())])
         self.spins = 0
         self.running = None
 

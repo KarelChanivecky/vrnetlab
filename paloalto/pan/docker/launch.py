@@ -61,8 +61,6 @@ class PAN_vm(vrnetlab.VM):
         # mgmt + 24 that show up in the vm, may as well populate them all in vrnetlab right away
         self.num_nics = 25
         self.nic_type = "virtio-net-pci"
-        # pan wants a uuid it seems (for licensing reasons?!)
-        self.uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
     def bootstrap_spin(self):
         """This function should be called periodically to do work."""

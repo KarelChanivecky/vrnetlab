@@ -6,7 +6,6 @@ import re
 import signal
 import subprocess
 import sys
-import uuid
 
 import vrnetlab
 
@@ -92,8 +91,6 @@ class VJUNOSSWITCH_vm(vrnetlab.VM):
 
         # these QEMU cmd line args are translated from the shipped libvirt XML file
         self.qemu_args.extend(["-overcommit", "mem-lock=off"])
-        # generate UUID to attach
-        self.qemu_args.extend(["-uuid", str(uuid.uuid4())])
 
         # extend QEMU args with device USB details, xhci is most virtualization-friendly
         self.qemu_args.extend(["-device", "qemu-xhci,id=usb,bus=pci.0,addr=0x1.0x2"])

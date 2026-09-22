@@ -2,6 +2,7 @@ import ast
 import os
 import sys
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -78,6 +79,47 @@ class TestQemuResourceEnvironment(unittest.TestCase):
         self.assertNotIn("ram", property_names)
         self.assertNotIn("cpu", property_names)
         self.assertNotIn("smp", property_names)
+
+
+class TestQemuUuid(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, {}, clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.vm = self.make_vm()
+
+    def make_vm(self):
+        vm = object.__new__(vrnetlab.VM)
+        vm._uuid = None
+        return vm
+
+    def test_random_uuid_is_valid_stable_and_distinct_per_vm(self):
+        first = self.vm.uuid
+        self.assertEqual(uuid.UUID(first).version, 4)
+        self.assertEqual(self.vm.uuid, first)
+        self.assertNotEqual(self.make_vm().uuid, first)
+
+    def test_environment_uuid(self):
+        value = "123e4567-e89b-12d3-a456-426614174000"
+        with patch.dict(os.environ, {"UUID": value}):
+            self.assertEqual(self.vm.uuid, value)
+        self.assertEqual(self.vm.uuid, value)
+
+    def test_empty_environment_uuid_generates_random_uuid(self):
+        with patch.dict(os.environ, {"UUID": ""}):
+            self.assertEqual(uuid.UUID(self.vm.uuid).version, 4)
+
+    def test_explicit_uuid_overrides_environment(self):
+        value = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        with patch.dict(os.environ, {"UUID": "123e4567-e89b-12d3-a456-426614174000"}):
+            self.vm.uuid = value
+            self.assertEqual(self.vm.uuid, value)
+
+    def test_sros_zero_default_and_license_override_are_preserved(self):
+        self.vm.uuid = "00000000-0000-0000-0000-000000000000"
+        self.assertEqual(self.vm.uuid, "00000000-0000-0000-0000-000000000000")
+        self.vm.uuid = "123e4567-e89b-12d3-a456-426614174000"
+        self.assertEqual(self.vm.uuid, "123e4567-e89b-12d3-a456-426614174000")
 
 
 if __name__ == "__main__":
