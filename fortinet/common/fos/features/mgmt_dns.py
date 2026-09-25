@@ -2,7 +2,7 @@
 
 import re
 
-from cli_commands import CommandSequence, CommandSpec, ConfigBlock
+from ..cli_commands import CommandSequence, CommandSpec, ConfigBlock
 
 from .base import Feature
 

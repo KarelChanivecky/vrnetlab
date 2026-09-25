@@ -3,7 +3,7 @@
 import re
 import time
 
-from cli_commands import CommandSequence, CommandSpec
+from ..cli_commands import CommandSequence, CommandSpec
 
 from .base import Feature
 
@@ -93,4 +93,3 @@ class WaitForFortiTokens(Feature):
             and not self.commander.busy
         ):
             self._submit_poll()
-

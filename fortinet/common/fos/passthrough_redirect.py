@@ -2,7 +2,7 @@ import logging
 import os
 
 import vrnetlab
-from net_mgmt_strategy import NetMgmtStrategy
+from .net_mgmt_strategy import NetMgmtStrategy
 
 DEFAULT_VETH_MAC_ADDR = "3a:3a:3a:3a:3a:3a"
 DEFAULT_NS_NAME = "fakehost"

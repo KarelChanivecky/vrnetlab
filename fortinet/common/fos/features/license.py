@@ -4,8 +4,8 @@ import os
 import re
 import time
 
-from cli_commands import CommandSequence, CommandSpec, SessionLossAction
-from common import BOOTSTRAP_HOSTNAME_REGEX, FOSCliState
+from ..cli_commands import CommandSequence, CommandSpec, SessionLossAction
+from ..common import BOOTSTRAP_HOSTNAME_REGEX, FOSCliState
 
 from .base import Feature
 
@@ -13,6 +13,11 @@ from .base import Feature
 DEFAULT_LICENSE_STATUS_TIMEOUT_SECONDS = 2 * 60
 LICENSE_STATUS_POLL_INTERVAL_SECONDS = 2
 LICENSE_SETTLE_SECONDS = 3
+
+# FortiOS does not print a single success message for "execute restore
+# vmlicense"; the only failure signature is "license install failed"
+# (e.g. "VM license install failed."). Everything else is success.
+LICENSE_FAILURE_PATTERN = re.compile(rb"(?mi)license install failed")
 
 
 def license_status_timeout_seconds():
@@ -45,15 +50,20 @@ class SetLicense(Feature):
         self._submit_restore()
 
     def _submit_restore(self):
+        # CMD_PROMPT must complete the restore too: when the install fails
+        # FortiOS prints the failure and returns to the prompt without ever
+        # asking for confirmation, which would otherwise wedge the block.
         self.commander.submit_block(self, CommandSequence("restore-license", [
             CommandSpec(
                 f"exe restore vmlicense tftp appliance.lic {self._tftp_server_ip}",
-                completion_states=(FOSCliState.CONFIRMATION,),
+                completion_states=(FOSCliState.CONFIRMATION, FOSCliState.CMD_PROMPT),
+                capture_output=True,
                 session_loss=SessionLossAction.CONTINUE,
             ),
         ]))
 
     def on_command_executed(self, command, state):
+        self._check_for_failure(command)
         if self._phase == "restore" and state == FOSCliState.CONFIRMATION:
             self._phase = "restore-confirmed"
             self.commander.submit_block(self, CommandSequence("confirm-license", [
@@ -63,9 +73,41 @@ class SetLicense(Feature):
                     session_loss=SessionLossAction.CONTINUE,
                 ),
             ]))
-        elif self._phase == "restore-confirmed" and state == FOSCliState.REBOOTING:
+            return
+        if self._phase == "restore-confirmed" and state == FOSCliState.REBOOTING:
             self._phase = "wait-prompt"
             self._wait_for_prompt = True
+            return
+        # The restore completed somewhere other than the confirmation
+        # prompt (a plain prompt instead): the install failed before
+        # confirmation. The failure check above already raised on a "fail"
+        # word, so fall through to wait-prompt rather than wedging the
+        # block.
+        self._phase = "wait-prompt"
+        self._wait_for_prompt = True
+
+    def on_output(self, output):
+        """Raise on a failure reported while a license command runs.
+
+        The confirmation is completed by the reboot, not by the command
+        prompt that returns right after "y" and before the reboot starts, so
+        a failed install would otherwise only surface once the command
+        completed. Watch the streaming output instead.
+        """
+        if self._phase in ("restore", "restore-confirmed"):
+            output = bytes(output)
+            if LICENSE_FAILURE_PATTERN.search(output):
+                raise RuntimeError(
+                    f"VM license install failed: {output!r}"
+                )
+        return False
+
+    def _check_for_failure(self, command):
+        output = bytes(command.output)
+        if LICENSE_FAILURE_PATTERN.search(output):
+            raise RuntimeError(
+                f"VM license install failed: {output!r}"
+            )
 
     def on_block_complete(self):
         if self._phase in ("restore", "restore-confirmed"):

@@ -1,7 +1,7 @@
 import logging
 
 import vrnetlab
-from net_mgmt_strategy import NetMgmtStrategy
+from .net_mgmt_strategy import NetMgmtStrategy
 
 BRIDGE_V4_ADDR = "172.31.255.29"
 MGMT_V4_ADDR = "172.31.255.30"

@@ -3,7 +3,7 @@
 import os
 import re
 
-from cli_commands import CommandSpec, ConfigBlock, EditBlock
+from ..cli_commands import CommandSpec, ConfigBlock, EditBlock
 
 from .base import Feature, StaticFeature
 

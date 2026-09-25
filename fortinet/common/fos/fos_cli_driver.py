@@ -1,7 +1,7 @@
 import logging
 import re
 import time
-from common import (
+from .common import (
     FOSCliState,
     FOS_CLI_STATE_PATTERNS,
     BOOTSTRAP_HOSTNAME_REGEX,

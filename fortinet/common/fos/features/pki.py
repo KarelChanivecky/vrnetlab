@@ -33,7 +33,7 @@ import re
 import shutil
 import ssl
 
-from cli_commands import (
+from ..cli_commands import (
     CommandSequence,
     CommandSpec,
     SetValue,
@@ -240,7 +240,7 @@ class InstallPkiCertificates(Feature):
         version = self.vm.fos_version
         if version is None:
             raise RuntimeError(
-                "FortiOS version is unavailable; system-version must run "
+                "FortiOS version is unavailable; image-info must run "
                 "before pki-certificates"
             )
         self._crl_config = self._crl_config_from_major(version.major)

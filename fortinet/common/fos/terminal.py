@@ -7,7 +7,7 @@ import time
 from collections import deque
 from contextlib import contextmanager
 
-from common import TRACE_LEVEL
+from .common import TRACE_LEVEL
 
 
 DEFAULT_BUFFER_LIMIT_BYTES = 1024 * 1024

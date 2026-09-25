@@ -3,8 +3,8 @@
 import os
 import re
 
-from cli_commands import CommandSequence, CommandSpec, SessionLossAction
-from common import FOSCliState
+from ..cli_commands import CommandSequence, CommandSpec, SessionLossAction
+from ..common import FOSCliState
 
 from .base import Feature
 

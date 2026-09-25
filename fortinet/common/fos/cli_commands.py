@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
-from common import FOSCliState
+from .common import FOSCliState
 
 
 class SessionLossAction(Enum):

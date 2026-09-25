@@ -2,7 +2,7 @@
 
 import os
 
-from cli_commands import ConfigBlock
+from ..cli_commands import ConfigBlock
 
 from .base import StaticFeature
 

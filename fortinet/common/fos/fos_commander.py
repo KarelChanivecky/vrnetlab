@@ -6,7 +6,7 @@ from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass
 
-from cli_commands import (
+from .cli_commands import (
     CleanupAction,
     CommandAttempt,
     CommandSequence,
@@ -15,8 +15,8 @@ from cli_commands import (
     SessionLossAction,
     flatten_commands,
 )
-from terminal import Data
-from common import FOSCliState, TRACE_LEVEL
+from .terminal import Data
+from .common import FOSCliState, TRACE_LEVEL
 
 DISPATCHABLE_COMPLETION_STATES = {
     FOSCliState.CMD_PROMPT,

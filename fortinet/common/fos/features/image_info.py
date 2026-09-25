@@ -1,10 +1,9 @@
-"""Detect and expose the running FortiOS version to bootstrap features."""
+"""Detect and expose the running FortiOS image version and product."""
 
 import re
 from dataclasses import dataclass, field
 
-from cli_commands import CommandSequence, CommandSpec
-
+from ..cli_commands import CommandSequence, CommandSpec
 from .base import Feature
 
 
@@ -14,6 +13,7 @@ VERSION_PATTERN = re.compile(
     rb"v?(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+),"
     rb"build(?P<build>\d+)"
 )
+PRODUCT_PATTERN = re.compile(rb"(?mi)^Version:\s*(?P<product>[\w.-]+)")
 
 
 @dataclass(frozen=True, order=True)
@@ -45,26 +45,37 @@ class FortiOSVersion:
         return f"{self.platform} {release}".strip()
 
 
-class DetectSystemVersion(Feature):
-    """Populate ``vm.fos_version`` once for all later bootstrap features."""
+def product_from_system_status(output):
+    match = PRODUCT_PATTERN.search(output)
+    if not match:
+        return None
+    token = match.group("product").decode(errors="replace")
+    return token.split("-", 1)[0]
+
+
+class ImageInfo(Feature):
+    """Populate ``vm.fos_version`` and ``vm.fos_product`` from system status."""
 
     def __init__(self, vm, commander):
-        super().__init__(vm, commander, "system-version")
+        super().__init__(vm, commander, "image-info")
 
     def activate(self):
-        self.commander.submit_block(self, CommandSequence("system-version", [
+        self.commander.submit_block(self, CommandSequence("image-info", [
             CommandSpec("get system status", capture_output=True, suppress_output=True),
         ]))
 
     def on_command_executed(self, command, state):
-        version = FortiOSVersion.from_system_status(bytes(command.output))
-        if version is None:
+        output = bytes(command.output)
+        version = FortiOSVersion.from_system_status(output)
+        product = product_from_system_status(output)
+        if version is None or product is None:
             raise RuntimeError(
-                "Could not determine the FortiOS version and build from "
+                "Could not determine the FortiOS image product and version from "
                 "get system status"
             )
         self.vm.fos_version = version
-        self.commander.logger.info("Detected FortiOS version %s", version)
+        self.vm.fos_product = product
+        self.commander.logger.info("Detected %s image %s", product, version)
 
     def on_block_complete(self):
         self.commander.feature_complete(self)

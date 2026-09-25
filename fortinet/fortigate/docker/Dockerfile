@@ -8,8 +8,8 @@ RUN apt-get update -qy \
    && rm -rf /var/lib/apt/lists/*
 
 ARG IMAGE
-COPY *.py /
-COPY features /features
+COPY fos /fos
+COPY launch.py /
 COPY $IMAGE /
 
 # While FortiOS is still bootstrapping, /fos_healthcheck.py blocks (Docker
@@ -22,6 +22,6 @@ COPY $IMAGE /
 # >240s before the first timeout strike, i.e. it takes >13min of bootstrap
 # to flip unhealthy. Wedge detection is independent of --timeout because
 # the stall exit (90s) completes the probe long before it.
-HEALTHCHECK --interval=30s --timeout=240s --retries=3 CMD ["uv", "run", "/fos_healthcheck.py"]
+HEALTHCHECK --interval=30s --timeout=240s --retries=3 CMD ["uv", "run", "/fos/fos_healthcheck.py"]
 
 EXPOSE 22 161/udp 830 5000 10000-10099 3443 80 443

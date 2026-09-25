@@ -9,8 +9,8 @@ import time
 import uuid
 from pathlib import Path
 
-from cli_commands import CommandSequence, CommandSpec
-from config_diff import diff_config
+from ..cli_commands import CommandSequence, CommandSpec
+from ..config_diff import diff_config
 
 from .base import Feature
 

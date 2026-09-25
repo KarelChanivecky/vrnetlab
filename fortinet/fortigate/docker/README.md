@@ -1,6 +1,8 @@
-# FortiGate Docker Launcher Internals
+# Shared FortiOS Launcher Internals
 
-The public FortiGate/Containerlab API is documented in
+The shared launcher source is in [`../../common/fos`](../../common/fos). The
+FortiGate and FortiProxy Docker Makefiles stage that package with a small
+product-specific `launch.py` wrapper. The public FortiGate API is documented in
 [`../README.md`](../README.md). This file documents how the launcher works
 inside the vrnetlab image and why some of the implementation looks unusual.
 
@@ -205,7 +207,7 @@ bytes into later state decisions.
 
 ## Feature Architecture
 
-Bootstrap work is split into feature objects under `features/`. A feature has a
+Bootstrap work is split into feature objects under `fos/features/`. A feature has a
 name, lifecycle hooks, optional file-watch integration, and zero or more command
 blocks.
 
@@ -231,9 +233,11 @@ Current bootstrap stages are:
 - `disk-format`: formats additional disks after the first FortiGate log disk
 - `admin`: disables password policy, creates/updates the desired admin, and
   handles session loss during password changes
-- `system-version`: reads `get system status` once and stores the parsed
+- `image-info`: reads `get system status` once and stores the parsed
   platform, major, minor, patch, and build on `vm.fos_version` for later
   features
+- `product-validation`: validates `vm.fos_product` and `vm.fos_version` against
+  the product wrapper and optional `FOS_PRODUCT_VERSION` constraint
 - `management`: configures `port1`, FortiGuard interface selection, and the
   management route for static management addressing
 - `bootstrap-dns`: temporarily sets DNS for license/bootstrap reachability

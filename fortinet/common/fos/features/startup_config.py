@@ -2,7 +2,7 @@
 
 import os
 
-from cli_commands import ConfigBlock, EditBlock
+from ..cli_commands import ConfigBlock, EditBlock
 from .base import StaticFeature
 
 

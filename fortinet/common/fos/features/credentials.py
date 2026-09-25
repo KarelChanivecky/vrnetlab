@@ -1,6 +1,6 @@
 """Administrator bootstrap feature."""
 
-from cli_commands import CommandSpec, ConfigBlock, EditBlock, SessionLossAction
+from ..cli_commands import CommandSpec, ConfigBlock, EditBlock, SessionLossAction
 
 from .base import StaticFeature
 
