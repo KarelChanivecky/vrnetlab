@@ -54,7 +54,7 @@ topology:
         FOS_MGMT_DNS_SECONDARY: "8.8.8.8"
         FOS_NO_ENC_CONFIG: "false"
         FOS_ONBOARDING: "false"
-        FOS_UUID: "6c6323d5-0713-58eb-9458-4f8803a2cd93"
+        UUID: "6c6323d5-0713-58eb-9458-4f8803a2cd93"
 ```
 
 ### Node Options
@@ -100,7 +100,7 @@ applies the intended startup config.
 | `FOS_PKI_LOCAL_CERT_PASS_FILES` | unset | semicolon-separated file paths | Optional password files whose contents are typed as `set password` for encrypted private keys, paired positionally with keyed `FOS_PKI_LOCAL_CERTS` entries. |
 | `FOS_PKI_REMOTE_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Installs remote peer certificates by typing the PEM into `config vpn certificate remote`. The object is named after the refname when given, otherwise the certificate CN. |
 | `FOS_PKI_CRLS` | unset | semicolon-separated `refname:path` CRL entries | Installs CRLs as base64 bodies in `config vpn certificate crl` when that tree is available. Older releases without a CRL config tree use `execute vpn certificate crl import tftp`. The object is named after the refname when given, otherwise the file basename. |
-| `FOS_UUID` | random UUID | UUID string | Sets the QEMU VM UUID. If unset, a new UUID is generated for each launch. |
+| `UUID` | random UUID | UUID string | Sets the QEMU VM UUID. If unset, vrnetlab generates a random UUID for the VM instance. |
 
 Containerlab also passes the usual vrnetlab launch arguments such as hostname,
 username, password, and connection mode. For manual runs these are available as
