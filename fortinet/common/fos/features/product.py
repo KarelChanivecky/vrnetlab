@@ -8,7 +8,10 @@ from .base import Feature
 from .image_info import FortiOSVersion
 
 
-VERSION_CONSTRAINT = re.compile(r"^\d+(?:\.\d+){0,3}(?:-\d+(?:\.\d+){0,3})?$")
+VERSION_CONSTRAINT = re.compile(
+    r"^(?P<version>\d+(?:\.\d+){0,2})(?:\.b(?P<build_tag>\d+))?$"
+    r"|^(?P<range_min>\d+(?:\.\d+){0,3})-(?P<range_max>\d+(?:\.\d+){0,3})$"
+)
 
 
 @dataclass(frozen=True)
@@ -30,10 +33,13 @@ class VersionBound:
 class VersionConstraint:
     minimum: VersionBound
     maximum: VersionBound | None = None
+    build: int | None = None
 
     def matches(self, version):
-        return self.minimum.matches(version) and (
-            self.maximum is None or self.maximum.matches(version)
+        return (
+            (self.build is None or version.build == self.build)
+            and self.minimum.matches(version)
+            and (self.maximum is None or self.maximum.matches(version))
         )
 
 
@@ -41,21 +47,29 @@ def parse_version_constraint(value):
     if not value:
         return None
     value = value.strip()
-    if not VERSION_CONSTRAINT.fullmatch(value):
+    match = VERSION_CONSTRAINT.fullmatch(value)
+    if not match:
         raise ValueError(
-            "FOS_PRODUCT_VERSION must contain one to four numeric components "
-            "or an inclusive range such as 7.2-8.0.1"
+            "FOS_PRODUCT_VERSION must be a release prefix (such as 8 or 8.0), "
+            "a build selector (such as 8.0.b278), or an inclusive range "
+            "such as 7.2-8.0.1"
         )
-    parts = value.split("-")
-    parsed = [tuple(int(component) for component in part.split(".")) for part in parts]
-    minimum = VersionBound(parsed[0])
-    if len(parsed) == 2:
-        maximum = VersionBound(parsed[1], is_upper=True)
+    if match.group("version") is not None:
+        parsed = tuple(int(component) for component in match.group("version").split("."))
+        minimum = VersionBound(parsed)
+        maximum = VersionBound(parsed, is_upper=True)
+        build_value = match.group("build_tag")
+        build = int(build_value) if build_value else None
     else:
-        # A missing component is a wildcard for a single-version constraint:
-        # 8 means 8.x, 8.0 means 8.0.x, and 7.2.6 means any build of 7.2.6.
-        maximum = VersionBound(parsed[0], is_upper=True)
-    constraint = VersionConstraint(minimum, maximum)
+        minimum = VersionBound(
+            tuple(int(component) for component in match.group("range_min").split("."))
+        )
+        maximum = VersionBound(
+            tuple(int(component) for component in match.group("range_max").split(".")),
+            is_upper=True,
+        )
+        build = None
+    constraint = VersionConstraint(minimum, maximum, build)
     if maximum is not None and minimum.as_tuple(0) > maximum.as_tuple(999999):
         raise ValueError("FOS_PRODUCT_VERSION range minimum must not exceed maximum")
     return constraint
