@@ -419,11 +419,21 @@ subtree to be written, including encrypted fields and any nested `config`
 blocks. Parent `config` / `edit` ancestry is retained so `current.conf` remains
 replayable.
 
-FortiOS may emit a different `ENC` representation on each `show`. By default,
-an ENC-only difference therefore saves the complete existing entry. Set
-`FOS_NO_ENC_CONFIG=true` to ignore ENC-only differences; encrypted fields are
-still retained when a new entry or another body change causes that entry to be
-saved.
+FortiOS may emit a different `ENC` representation for a protected value on
+each `show`, even when the underlying secret has not changed. The capture
+cannot distinguish that regenerated representation from a real password or
+secret change, because the value is opaque. There is therefore a tradeoff:
+
+- By default, ENC-only differences count as changes. This preserves a real
+  secret-only update on an existing entry, but regenerated ENC values can cause
+  an otherwise unchanged entry to be included in `current.conf`.
+- Set `FOS_NO_ENC_CONFIG=true` to ignore ENC-only differences on existing
+  entries. This avoids captures caused only by regenerated ENC values, but a
+  real secret-only update on an existing entry will not be captured.
+
+This setting affects only ENC-only differences on entries already present in
+the baseline. New entries are still written completely, and an existing entry
+with any other body change is still written with its current encrypted fields.
 
 ## Boot Features
 
