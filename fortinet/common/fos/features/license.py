@@ -13,6 +13,7 @@ from .base import Feature
 DEFAULT_LICENSE_STATUS_TIMEOUT_SECONDS = 2 * 60
 LICENSE_STATUS_POLL_INTERVAL_SECONDS = 2
 LICENSE_SETTLE_SECONDS = 3
+LICENSE_WAIT_STATUSES = {"pending", "grace period"}
 
 # FortiOS does not print a single success message for "execute restore
 # vmlicense"; the only failure signature is "license install failed"
@@ -159,8 +160,20 @@ class WaitForLicenseValidation(Feature):
 
     def on_command_executed(self, command, state):
         status = self._license_status(bytes(command.output))
-        if not status or status.lower() == "pending":
+        normalized_status = status.lower() if status else None
+        if not status or normalized_status in LICENSE_WAIT_STATUSES:
+            previous_status = self._status.lower() if self._status else None
             self._status = status
+            if normalized_status != previous_status:
+                self._logger.info(
+                    "License status is %s; continuing validation polls",
+                    status or "unavailable",
+                )
+            if time.monotonic() >= self._deadline:
+                raise RuntimeError(
+                    "VM license validation timed out with status "
+                    f"{status or 'unavailable'}"
+                )
             self._next_poll = time.monotonic() + LICENSE_STATUS_POLL_INTERVAL_SECONDS
             return
         self._status = status
@@ -196,7 +209,8 @@ class WaitForLicenseValidation(Feature):
             return
         if now >= self._deadline:
             raise RuntimeError(
-                "VM license validation timed out while status remained Pending"
+                "VM license validation timed out with status "
+                f"{self._status or 'unavailable'}"
             )
         if now >= self._next_poll and not self.commander.busy:
             self._next_poll = None

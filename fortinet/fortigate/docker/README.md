@@ -250,8 +250,8 @@ Current bootstrap stages are:
   FortiOS can remove routes or drop sessions when registration state changes
 - `fortiguard-hooks-after-license`: reapplies the FortiGuard hook settings after
   the license reboot whenever `FOS_FORTIGUARD_HOOKS` is enabled
-- `license-validation`: polls `get system status` until license status is no longer
-  `Pending`, or until the configured timeout
+- `license-validation`: polls `get system status` until license status is
+  `Valid`; `Pending` and `Grace Period` are retried until the configured timeout
 - `management-vrf`: moves management into VRF 1 when supported, or narrows
   the management route on FortiProxy
 - `undo-bootstrap-dns`: removes the temporary bootstrap DNS settings
