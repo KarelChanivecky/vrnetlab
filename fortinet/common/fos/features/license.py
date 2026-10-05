@@ -13,7 +13,8 @@ from .base import Feature
 DEFAULT_LICENSE_STATUS_TIMEOUT_SECONDS = 2 * 60
 LICENSE_STATUS_POLL_INTERVAL_SECONDS = 2
 LICENSE_SETTLE_SECONDS = 3
-LICENSE_WAIT_STATUSES = {"pending", "grace period"}
+LICENSE_WAIT_STATUSES = {"pending"}
+LICENSE_GRACE_PERIOD_STATUS = "grace period"
 
 # FortiOS does not print a single success message for "execute restore
 # vmlicense"; the only failure signature is "license install failed"
@@ -26,6 +27,10 @@ def license_status_timeout_seconds():
     if not value:
         return DEFAULT_LICENSE_STATUS_TIMEOUT_SECONDS
     return int(value)
+
+
+def wait_for_valid_license():
+    return os.getenv("FOS_WAIT_FOR_VALID_LICENSE", "false").strip().lower() == "true"
 
 
 class SetLicense(Feature):
@@ -161,7 +166,14 @@ class WaitForLicenseValidation(Feature):
     def on_command_executed(self, command, state):
         status = self._license_status(bytes(command.output))
         normalized_status = status.lower() if status else None
-        if not status or normalized_status in LICENSE_WAIT_STATUSES:
+        if (
+            not status
+            or normalized_status in LICENSE_WAIT_STATUSES
+            or (
+                normalized_status == LICENSE_GRACE_PERIOD_STATUS
+                and wait_for_valid_license()
+            )
+        ):
             previous_status = self._status.lower() if self._status else None
             self._status = status
             if normalized_status != previous_status:
@@ -177,11 +189,21 @@ class WaitForLicenseValidation(Feature):
             self._next_poll = time.monotonic() + LICENSE_STATUS_POLL_INTERVAL_SECONDS
             return
         self._status = status
+        if normalized_status == LICENSE_GRACE_PERIOD_STATUS:
+            self._logger.info(
+                "Accepting license status %s without waiting for Valid",
+                status,
+            )
+            self._finish_validation()
+            return
         if status.lower() != "valid":
             raise RuntimeError(
                 f"VM license validation failed: status {status}"
             )
         self._logger.info(f"License status changed to {status}")
+        self._finish_validation()
+
+    def _finish_validation(self):
         self._phase = "done"
         self._settle_until = time.monotonic() + LICENSE_SETTLE_SECONDS
 
