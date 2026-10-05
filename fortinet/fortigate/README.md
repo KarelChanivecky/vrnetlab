@@ -84,7 +84,7 @@ applies the intended startup config.
 | `CLAB_MGMT_PASSTHROUGH` | `true` | `true`, `false` | Selects management wiring. `true` uses tap/tc passthrough so the FortiGate management interface participates directly in the Containerlab management network. `false` uses a host-forwarded bridge inside the vrnetlab container. |
 | `FOS_DISK_SPECS` | unset | comma-separated `qemu-img create` sizes, for example `10g` or `10g,10g` | Adds extra virtio disks. One disk becomes the FortiGate log disk. Additional disks are formatted during bootstrap; the second disk is expected to become WAN optimization storage on FortiOS versions that support it. |
 | `FOS_DEBUG_FEATURE` | unset | feature name | Runs bootstrap only through the named feature, then skips later features. Public feature order: `image-info`, `product-validation`, `disk-format`, `admin`, `management`, `bootstrap-dns`, `fortiguard-hooks`, `setup-license`, `fortiguard-hooks-after-license`, `default-config`, `management-after-license`, `license-validation`, `fortitoken-provisioning`, `pki-certificates`, `management-vrf`, `capture-config`, `startup-config`. |
-| `FOS_EXIT_ON_BOOTSTRAP_ERROR` | `true` | `true`, `false` | Stops the launcher with a nonzero exit status when a bootstrap feature raises an error. Set to `false` only for manual recovery or diagnostics; the launcher logs the first error, leaves the VM running, and halts bootstrap without reporting startup complete. |
+| `FOS_EXIT_ON_BOOTSTRAP_ERROR` | `true` | `true`, `false` | Stops the launcher with a nonzero exit status when a bootstrap feature raises an error. With `false`, a failed feature is skipped and later features continue when FortiOS is back at a command prompt. After a rejected desired-password login, the launcher retries the last accepted credentials for that login while retaining the desired credentials for subsequent logins. It does not replay an admin password change after FortiOS has committed it. Unrecoverable console or login errors leave the VM running, release the launcher's serial Telnet connection, and halt bootstrap for manual repair. If recovery or features were skipped, bootstrap reaches the end but the VM is not reported healthy. |
 | `FOS_HEALTHCHECK_STALL_SECONDS` | `90` | seconds | How long the Docker healthcheck probe waits for a launcher heartbeat before reporting failure. Only relevant for diagnostics; the launcher must stay responsive within this window. See [Container Healthcheck](#container-healthcheck). |
 | `FOS_HEARTBEAT_FILE` | `/healthbeat` | container path | File the launcher appends one byte to on every main-loop iteration; the healthcheck probe watches it to distinguish a slow bootstrap from a wedged launcher. |
 | `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` | `120` | seconds | Maximum time to poll `get system status` for license status to leave `Pending` after license installation. |
@@ -447,9 +447,16 @@ User-visible behavior includes:
 - `admin-scp` enabled for configuration backup support
 - default credential handling across FortiOS 6.4, 7.x, and 8.x behavior
 - password-policy failure surfaced as a startup error
-- bootstrap feature failures stop startup by default; set
-  `FOS_EXIT_ON_BOOTSTRAP_ERROR=false` only when a manually recoverable VM is
-  preferred over an immediate launcher exit
+- bootstrap feature failures stop startup by default; with
+  `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, failures at a command prompt are logged
+  and that feature is skipped while remaining features continue. Errors that
+  reject the desired credentials trigger a retry with the last accepted
+  credentials for that login; the desired credentials remain active for later
+  logins. A committed admin password-change block is not replayed after logout.
+  Errors that leave the console outside a command prompt or reject both
+  credentials still halt bootstrap, release the launcher's serial Telnet
+  connection, and leave the VM for manual repair. A run with recovered
+  credentials or skipped features is not reported healthy.
 - explicit failure if no `qcow2` image is present
 - full serial output logging at debug level
 

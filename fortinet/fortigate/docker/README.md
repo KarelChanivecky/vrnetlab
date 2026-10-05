@@ -278,13 +278,19 @@ written atomically; records older than 120 s are swept when a new request
 is accepted. An empty trigger (a human `touch`) still works and gets a
 generated id. See the `fortigate/README.md` "Saving Config" section.
 
-Bootstrap feature errors are fatal by default. Set
-`FOS_EXIT_ON_BOOTSTRAP_ERROR=false` to log the first feature error, leave the
-VM running, and halt bootstrap so an operator can repair the guest manually.
-Best-effort mode does not undo commands that already ran and does not report
-the partially configured VM as healthy. Runtime feature failures, such as a
-`/get-config` request, remain request errors and do not change this bootstrap
-policy.
+Bootstrap feature errors are fatal by default. With
+`FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, a failed feature is logged and skipped
+when FortiOS is back at a command prompt, and the remaining startup features
+continue. This is best effort: commands that already ran are not undone, and a
+run with skipped features is not reported healthy. If an error leaves the CLI
+at a login prompt after the desired password was rejected, the launcher retries
+the last accepted credentials for that login while retaining the desired
+credentials for later logins. It does not replay an admin password-change block
+after FortiOS has committed it. If the CLI is at an interactive prompt or both
+credential attempts fail, bootstrap halts, keeps the VM running, and releases
+the launcher's serial Telnet connection for manual repair. Runtime feature
+failures, such as a `/get-config` request, remain request errors and do not
+change this bootstrap policy.
 
 The feature architecture is intentionally serial. FortiOS CLI state is global,
 the console has one prompt stream, and several operations can reboot or remove
@@ -300,9 +306,11 @@ a blank default password first. The driver keeps separate bootstrap and desired
 credentials so it can answer prompts with the password that is valid at that
 moment.
 
-The desired credentials are activated only after FortiOS accepts the password
-change or after the admin edit commits. This avoids answering a current-password
-prompt with a password FortiOS has not accepted yet.
+The desired credentials are activated after the admin edit commits. Password
+command output is checked for FortiOS command failures. After a password
+change, the driver first tries the desired credentials. If FortiOS rejects
+them, it retries immediately with the previously accepted credentials, without
+replacing the desired credentials used for later logins.
 
 ### Prompt patterns change during bootstrap
 
