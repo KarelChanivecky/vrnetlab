@@ -49,6 +49,8 @@ class FOSCliDriver:
         self._blank_fallback_available = True
         self._send_blank_password = False
         self._initial_login_complete = False
+        self._awaiting_login_acceptance = False
+        self._credential_recovery_pending = False
         self._pending_bootstrap_activation = False
         self._unknown_started_at = None
         self._unknown_newlines = 0
@@ -160,6 +162,7 @@ class FOSCliDriver:
         username = self._credentials.username
         if self._use_recovery_credentials and self._recovery_credentials is not None:
             username = self._recovery_credentials[0]
+        self._awaiting_login_acceptance = True
         self._respond(FOSCliState.PROVIDE_USERNAME, username)
 
     def _provide_password(self):
@@ -196,7 +199,11 @@ class FOSCliDriver:
         self._terminal.write(b" ")
 
     def _credential_accepted(self):
+        self._accept_login()
+
+    def _accept_login(self):
         self._initial_login_complete = True
+        self._awaiting_login_acceptance = False
         recovered = (
             self._use_recovery_credentials
             and self._recovery_credentials is not None
@@ -204,19 +211,30 @@ class FOSCliDriver:
         if recovered:
             self._use_recovery_credentials = False
             self._recovery_attempted = False
-            self._commander.record_feature_error(
-                "admin-credentials",
-                "desired credentials were rejected; resumed with the previous credentials "
-                "while keeping the desired credentials for later logins",
-            )
+            if not self._credential_recovery_pending:
+                self._commander.record_feature_error(
+                    "admin-credentials",
+                    "desired credentials were rejected; resumed with the previous credentials "
+                    "while keeping the desired credentials for later logins",
+                )
+            self._credential_recovery_pending = True
         elif self._recovery_credentials is not None:
             self._recovery_attempted = False
+            if self._credential_recovery_pending:
+                self._commander.resolve_feature_error(
+                    "admin-credentials",
+                    "the desired credentials authenticated successfully",
+                )
+                self._credential_recovery_pending = False
         self._activate_pending_bootstrap_credentials()
 
     def _command_prompt(self):
         """Accept password confirmation on versions that skip ``Welcome!``."""
-        self._initial_login_complete = True
-        self._activate_pending_bootstrap_credentials()
+        if self._awaiting_login_acceptance:
+            self._accept_login()
+        else:
+            self._initial_login_complete = True
+            self._activate_pending_bootstrap_credentials()
 
     def _activate_pending_bootstrap_credentials(self):
         if self._pending_bootstrap_activation:

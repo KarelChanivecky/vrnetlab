@@ -282,7 +282,9 @@ Bootstrap feature errors are fatal by default. With
 `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, a failed feature is logged and skipped
 when FortiOS is back at a command prompt, and the remaining startup features
 continue. This is best effort: commands that already ran are not undone, and a
-run with skipped features is not reported healthy. If an error leaves the CLI
+run with skipped features is not reported healthy. Credential fallback remains
+unresolved until the desired credentials authenticate successfully; unresolved
+fallback also keeps the VM unhealthy. If an error leaves the CLI
 at a login prompt after the desired password was rejected, the launcher retries
 the last accepted credentials for that login while retaining the desired
 credentials for later logins. It does not replay an admin password-change block
