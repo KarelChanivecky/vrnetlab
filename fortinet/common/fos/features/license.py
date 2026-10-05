@@ -15,6 +15,7 @@ LICENSE_STATUS_POLL_INTERVAL_SECONDS = 2
 LICENSE_SETTLE_SECONDS = 3
 LICENSE_WAIT_STATUSES = {"pending"}
 LICENSE_GRACE_PERIOD_STATUS = "grace period"
+LOG_LICENSE_STATUS_OUTPUT_ENV = "FOS_LOG_LICENSE_STATUS_OUTPUT"
 
 # FortiOS does not print a single success message for "execute restore
 # vmlicense"; the only failure signature is "license install failed"
@@ -144,6 +145,7 @@ class WaitForLicenseValidation(Feature):
         self._next_poll = None
         self._phase = "idle"
         self._status = None
+        self._status_output_logged = False
         self._standard_output_active = False
         self._settle_until = 0
 
@@ -164,7 +166,9 @@ class WaitForLicenseValidation(Feature):
         self._next_poll = time.monotonic()
 
     def on_command_executed(self, command, state):
-        status = self._license_status(bytes(command.output))
+        output = bytes(command.output)
+        self._log_status_output(output)
+        status = self._license_status(output)
         normalized_status = status.lower() if status else None
         if (
             not status
@@ -213,6 +217,17 @@ class WaitForLicenseValidation(Feature):
         if not match:
             match = re.search(rb"(?mi)^License:\s*(.+?)\s*\r?$", output)
         return match.group(1).decode(errors="replace").strip() if match else None
+
+    def _log_status_output(self, output):
+        if self._status_output_logged or os.getenv(
+            LOG_LICENSE_STATUS_OUTPUT_ENV, "false"
+        ).strip().lower() != "true":
+            return
+        self._status_output_logged = True
+        self._logger.info(
+            "Captured get system status output for license validation:\n%s",
+            output.decode(errors="replace").rstrip(),
+        )
 
     def on_block_complete(self):
         if self._phase != "done":
