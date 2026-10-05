@@ -87,7 +87,7 @@ applies the intended startup config.
 | `FOS_EXIT_ON_BOOTSTRAP_ERROR` | `true` | `true`, `false` | Stops the launcher with a nonzero exit status when a bootstrap feature raises an error. With `false`, a failed feature is skipped and later features continue when FortiOS is back at a command prompt. After a rejected desired-password login, the launcher retries the last accepted credentials for that login while retaining the desired credentials for subsequent logins. It does not replay an admin password change after FortiOS has committed it. Unrecoverable console or login errors leave the VM running, release the launcher's serial Telnet connection, and halt bootstrap for manual repair. Unresolved recovery or skipped features keep the VM unhealthy; a later successful login with the desired credentials clears a transient credential-recovery error. |
 | `FOS_HEALTHCHECK_STALL_SECONDS` | `90` | seconds | How long the Docker healthcheck probe waits for a launcher heartbeat before reporting failure. Only relevant for diagnostics; the launcher must stay responsive within this window. See [Container Healthcheck](#container-healthcheck). |
 | `FOS_HEARTBEAT_FILE` | `/healthbeat` | container path | File the launcher appends one byte to on every main-loop iteration; the healthcheck probe watches it to distinguish a slow bootstrap from a wedged launcher. |
-| `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` | `120` | seconds | Maximum time to poll `get system status` for license status to leave `Pending` after license installation. |
+| `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` | `120` | seconds | Maximum time to poll `get system status` for license status to become `Valid` after installation. `Pending` and `Grace Period` are retried during this interval. |
 | `FOS_LOG_LEVEL` | `DEBUG` | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or numeric Python log level | Sets launcher log verbosity. |
 | `FOS_MGMT_DNS_PRIMARY` | `1.1.1.1` | IPv4 address | Sets the primary DNS server configured during bootstrap for license and FortiGuard reachability. The setting persists after bootstrap; the launcher does not remove it. |
 | `FOS_MGMT_DNS_SECONDARY` | `8.8.8.8` | IPv4 address | Sets the secondary DNS server configured during bootstrap. Like the primary, it persists after bootstrap. The legacy misspelling `FOS_MGMG_DNS_SECONDARY` remains accepted. |
@@ -250,7 +250,9 @@ when the status changes to `VALID`; the launcher handles re-login and continues
 bootstrap.
 
 After installation, the launcher polls `get system status` until the license
-field is no longer `Pending`. By default it waits up to 2 minutes. Set
+status is `Valid`. `Pending` and `Grace Period` are treated as transitional
+statuses and retried; other non-valid statuses fail validation immediately.
+By default it waits up to 2 minutes. Set
 `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` to override that timeout for shorter
 targeted runs.
 
