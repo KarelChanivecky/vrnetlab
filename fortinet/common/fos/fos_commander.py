@@ -117,7 +117,23 @@ class FOSCommander:
     def record_feature_error(self, name, error):
         """Record a recoverable bootstrap problem without stopping the queue."""
         self._feature_errors.append((name, str(error)))
-        self.logger.warning("Continuing bootstrap after %s: %s", name, error)
+        self.logger.info("Using recovery for %s: %s", name, error)
+
+    def resolve_feature_error(self, name, resolution):
+        """Clear a recoverable feature error after its condition is resolved."""
+        remaining = [
+            (feature_name, error)
+            for feature_name, error in self._feature_errors
+            if feature_name != name
+        ]
+        resolved_count = len(self._feature_errors) - len(remaining)
+        if resolved_count:
+            self._feature_errors = remaining
+            self.logger.info(
+                "Resolved %s bootstrap recovery after %s",
+                name,
+                resolution,
+            )
 
     def start(self, features):
         self._features.extend(features)
