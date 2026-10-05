@@ -59,6 +59,8 @@ class FOSCommander:
         self._suppression = ExitStack()
         self._ready = False
         self._startup_complete = False
+        self._feature_errors = []
+        self._authenticated_once = False
         self._completed_messages = deque()
         self._start_time = datetime.datetime.now()
 
@@ -72,8 +74,50 @@ class FOSCommander:
 
     @property
     def startup_complete(self):
-        """Whether the initial feature queue has completed successfully."""
+        """Whether the initial feature queue has drained, with or without errors."""
         return self._startup_complete
+
+    @property
+    def feature_errors(self):
+        """Bootstrap feature errors recorded while best-effort mode is active."""
+        return tuple(self._feature_errors)
+
+    def continue_after_error(self, error, at_command_prompt):
+        """Skip failed work only when the CLI is back at a usable prompt.
+
+        A login rejection after the driver's credential recovery attempts, or
+        an error during an interactive prompt, cannot be recovered by sending
+        the next feature's commands, so automatic bootstrap must stop.
+        """
+        if not at_command_prompt or self._ready:
+            return None
+        if self._active_feature is None and not self._in_cleanup:
+            return None
+
+        if self._active_feature is not None:
+            failed_name = self._active_feature.name
+            self._pending.clear()
+            self._active_commands = ()
+            self._inflight = None
+            self._suppression.close()
+            self._suppression = ExitStack()
+            self._finish_standard_output_context(self._active_feature)
+            self._schedule_feature_cleanup(self._active_feature, "interruption")
+            self._active_feature = None
+        else:
+            failed_name = "cleanup"
+            self._inflight = None
+            self._suppression.close()
+            self._suppression = ExitStack()
+
+        self._in_cleanup = False
+        self._feature_errors.append((failed_name, str(error)))
+        return failed_name
+
+    def record_feature_error(self, name, error):
+        """Record a recoverable bootstrap problem without stopping the queue."""
+        self._feature_errors.append((name, str(error)))
+        self.logger.warning("Continuing bootstrap after %s: %s", name, error)
 
     def start(self, features):
         self._features.extend(features)
@@ -151,9 +195,18 @@ class FOSCommander:
         if state == FOSCliState.SESSION_LOST:
             self._handle_session_loss()
             return
+        if state == FOSCliState.PROVIDE_USERNAME and self._authenticated_once:
+            # Password updates can return to login without the explicit
+            # SESSION_LOST banner. Requeue the active command block so it is
+            # applied after the driver restores an accepted login.
+            self._handle_session_loss()
+            return
         if state == FOSCliState.CREDENTIAL_ACCEPTED:
+            self._authenticated_once = True
             self._recovering = False
             return
+        if state == FOSCliState.CMD_PROMPT:
+            self._authenticated_once = True
 
         if self._inflight and state in (
             self._inflight.spec.completion_states or (FOSCliState.CMD_PROMPT,)
@@ -193,7 +246,17 @@ class FOSCommander:
             if not self._startup_complete:
                 self._startup_complete = True
                 elapsed = datetime.datetime.now() - self._start_time
-                self.logger.info(f"Startup complete in {elapsed}")
+                if self._feature_errors:
+                    failed = ", ".join(name for name, _error in self._feature_errors)
+                    self.logger.error(
+                        "Bootstrap reached the end with %d feature error(s) in %s; "
+                        "failed work: %s",
+                        len(self._feature_errors),
+                        elapsed,
+                        failed,
+                    )
+                else:
+                    self.logger.info(f"Startup complete in {elapsed}")
             else:
                 while self._completed_messages:
                     self.logger.info(self._completed_messages.popleft())

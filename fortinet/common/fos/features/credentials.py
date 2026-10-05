@@ -11,16 +11,21 @@ class CredentialsFeature(StaticFeature):
     def __init__(self, vm, commander):
         self._activate_after_admin_commit = False
         self._desired_credentials_activated = False
+        self._password_change_committed = False
         credentials = vm.desired_credentials
         admin_children = ["set accprofile super_admin"]
         if credentials.password:
             admin_children.append(CommandSpec(
                 f"set password {credentials.password}",
                 session_loss=SessionLossAction.CONTINUE,
+                capture_output=True,
+                fail_on_error=True,
             ))
         elif credentials.username == "admin":
             admin_children.append(CommandSpec(
                 "unset password", session_loss=SessionLossAction.CONTINUE,
+                capture_output=True,
+                fail_on_error=True,
             ))
         super().__init__(vm, commander, "admin", [
             ConfigBlock("system password-policy", ["set status disable"]),
@@ -31,6 +36,12 @@ class CredentialsFeature(StaticFeature):
         if self._is_password_command(attempt.spec.line):
             self._activate_desired_credentials()
             self._activate_after_admin_commit = False
+            return SessionLossAction.CONTINUE
+        if self._password_change_committed:
+            # FortiOS may log out as the admin edit closes. The password
+            # command and `next` have already committed the new credentials,
+            # so replaying this block would use the previous password again.
+            return SessionLossAction.CONTINUE
         return super().on_session_loss(attempt)
 
     def on_command_executed(self, command, state):
@@ -40,6 +51,7 @@ class CredentialsFeature(StaticFeature):
         elif self._activate_after_admin_commit and line == "next":
             self._activate_desired_credentials()
             self._activate_after_admin_commit = False
+            self._password_change_committed = True
 
     @staticmethod
     def _is_password_command(line):

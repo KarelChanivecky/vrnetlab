@@ -229,6 +229,10 @@ class FortiOS_vm(vrnetlab.VM):
             self._bootstrap_password,
             self.activate_blank_credentials,
             self.activate_bootstrap_credentials,
+            # Always retry the last accepted credentials after a desired
+            # password transition is rejected. The bootstrap error policy
+            # controls feature failures, not whether the console can recover.
+            allow_credential_recovery=True,
         )
         configure_dns = ConfigureMgmtDns(self, self.commander)
         license_validation = WaitForLicenseValidation(self, self.commander)
@@ -299,13 +303,33 @@ class FortiOS_vm(vrnetlab.VM):
             if self._exit_on_bootstrap_error or self.commander.startup_complete:
                 self.stop()
                 raise
+            failed_work = self.commander.continue_after_error(
+                error,
+                at_command_prompt=self.driver.at_command_prompt,
+            )
+            if failed_work is not None:
+                self.logger.exception(
+                    "Bootstrap work %s failed; continuing with remaining features "
+                    "because FOS_EXIT_ON_BOOTSTRAP_ERROR=false",
+                    failed_work,
+                )
+                return True
             self._bootstrap_error = error
             self.logger.exception(
-                "Bootstrap failed; keeping the VM running for manual repair "
-                "because FOS_EXIT_ON_BOOTSTRAP_ERROR=false"
+                "Bootstrap cannot continue safely; keeping the VM running for manual "
+                "repair because FOS_EXIT_ON_BOOTSTRAP_ERROR=false"
             )
+            try:
+                self.terminal.close()
+                self.logger.info(
+                    "Released the launcher's serial Telnet connection after bootstrap stopped"
+                )
+            except Exception:
+                self.logger.exception(
+                    "Failed to release the serial Telnet connection after bootstrap stopped"
+                )
             return False
-        if self.driver.ready:
+        if self.driver.ready and not self.commander.feature_errors:
             self.running = True
         return True
 
@@ -357,6 +381,7 @@ class FortiOS_vm(vrnetlab.VM):
         self.terminal.write(b"\r")
 
     def activate_desired_credentials(self):
+        self.driver.remember_current_credentials()
         self.credentials.username = self.desired_credentials.username
         self.credentials.password = self.desired_credentials.password
 

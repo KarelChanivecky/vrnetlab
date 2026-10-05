@@ -28,18 +28,24 @@ class FOSCliDriver:
         bootstrap_password,
         activate_blank_credentials,
         activate_bootstrap_credentials,
+        allow_credential_recovery=False,
     ):
         self._terminal = terminal
         self._commander = commander
         self._logger = logger
         self._state_patterns = FOS_CLI_STATE_PATTERNS.copy()
         self._last_known_state = FOSCliState.UNKNOWN
+        self._current_state = FOSCliState.UNKNOWN
         self._last_logged_state = None
         self._idle_spins = 0
         self._credentials = credentials
         self._bootstrap_password = bootstrap_password
         self._activate_blank_credentials = activate_blank_credentials
         self._activate_bootstrap_credentials = activate_bootstrap_credentials
+        self._allow_credential_recovery = allow_credential_recovery
+        self._recovery_credentials = None
+        self._recovery_attempted = False
+        self._use_recovery_credentials = False
         self._blank_fallback_available = True
         self._send_blank_password = False
         self._initial_login_complete = False
@@ -70,10 +76,29 @@ class FOSCliDriver:
     def ready(self):
         return self._commander.ready
 
+    def remember_current_credentials(self):
+        """Keep the last accepted credentials for a failed password transition."""
+        if self._recovery_credentials is not None or self._recovery_attempted:
+            return
+        self._recovery_credentials = (
+            self._credentials.username,
+            self._credentials.password,
+        )
+        self._recovery_attempted = False
+
+    @property
+    def at_command_prompt(self):
+        """Whether the most recent console event left FortiOS at a CLI prompt."""
+        return self._current_state == FOSCliState.CMD_PROMPT or (
+            self._current_state == FOSCliState.TN_TIMEOUT
+            and self._last_known_state == FOSCliState.CMD_PROMPT
+        )
+
     def process_state(self):
         spin_start = time.time()
         while not self.ready and time.time() < spin_start + PROCESS_SPIN_SECONDS:
             state, output, matched = self._next_state()
+            self._current_state = state
             if output and not matched:
                 self._commander.on_output(output)
                 if state == FOSCliState.UNKNOWN:
@@ -132,16 +157,25 @@ class FOSCliDriver:
                 raise
 
     def _provide_username(self):
-        self._respond(FOSCliState.PROVIDE_USERNAME, self._credentials.username)
+        username = self._credentials.username
+        if self._use_recovery_credentials and self._recovery_credentials is not None:
+            username = self._recovery_credentials[0]
+        self._respond(FOSCliState.PROVIDE_USERNAME, username)
 
     def _provide_password(self):
         if self._send_blank_password:
-            # The fallback is consumed as soon as it is sent. A rejection of
-            # this attempt, or any later login rejection, is fatal.
+            # The initial blank-password fallback is consumed as soon as it is
+            # sent. Later credential recovery is managed separately.
             self._send_blank_password = False
             self._blank_fallback_available = False
             self._activate_blank_credentials()
             self._respond(FOSCliState.PROVIDE_PASSWORD, b"")
+            return
+        if self._use_recovery_credentials and self._recovery_credentials is not None:
+            self._respond(
+                FOSCliState.PROVIDE_PASSWORD,
+                self._recovery_credentials[1],
+            )
             return
         self._respond(FOSCliState.PROVIDE_PASSWORD, self._credentials.password)
 
@@ -163,10 +197,25 @@ class FOSCliDriver:
 
     def _credential_accepted(self):
         self._initial_login_complete = True
+        recovered = (
+            self._use_recovery_credentials
+            and self._recovery_credentials is not None
+        )
+        if recovered:
+            self._use_recovery_credentials = False
+            self._recovery_attempted = False
+            self._commander.record_feature_error(
+                "admin-credentials",
+                "desired credentials were rejected; resumed with the previous credentials "
+                "while keeping the desired credentials for later logins",
+            )
+        elif self._recovery_credentials is not None:
+            self._recovery_attempted = False
         self._activate_pending_bootstrap_credentials()
 
     def _command_prompt(self):
         """Accept password confirmation on versions that skip ``Welcome!``."""
+        self._initial_login_complete = True
         self._activate_pending_bootstrap_credentials()
 
     def _activate_pending_bootstrap_credentials(self):
@@ -222,6 +271,17 @@ class FOSCliDriver:
         self._pending_bootstrap_activation = False
         if not self._initial_login_complete and self._blank_fallback_available:
             self._send_blank_password = True
+            return
+        if (
+            self._allow_credential_recovery
+            and self._recovery_credentials is not None
+            and not self._recovery_attempted
+        ):
+            self._recovery_attempted = True
+            self._use_recovery_credentials = True
+            self._logger.warning(
+                "Credentials were rejected; retrying with the previously accepted credentials"
+            )
             return
         raise RuntimeError("Credential rejected")
 
