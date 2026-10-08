@@ -218,6 +218,7 @@ class FortiOS_vm(vrnetlab.VM):
         self.commander = FOSCommander(
             terminal=self.terminal,
             logger=self.logger,
+            continue_on_error=not self._exit_on_bootstrap_error,
         )
         self.fos_version = None
         self.fos_product = None

@@ -41,7 +41,7 @@ class FOSCommander:
     _CONSOLE_INSPECT_LINE = "show full-configuration system console"
     _CONSOLE_STANDARD_LINE = "set output standard"
 
-    def __init__(self, terminal, logger):
+    def __init__(self, terminal, logger, continue_on_error=False):
         self.terminal = terminal
         self.logger = logger
         self._features = deque()
@@ -63,6 +63,38 @@ class FOSCommander:
         self._authenticated_once = False
         self._completed_messages = deque()
         self._start_time = datetime.datetime.now()
+        self._continue_on_error = continue_on_error
+        self._pending_feature_error = None
+        self._current_state = None
+        self._callback_failed = False
+
+    def _call_feature(self, callback, *args):
+        """Run a feature callback and apply best-effort policy at this boundary."""
+        try:
+            return callback(*args)
+        except Exception as error:
+            if not self._continue_on_error:
+                raise
+            self.logger.exception("Bootstrap feature callback failed")
+            self._pending_feature_error = error
+            self._callback_failed = True
+            return None
+
+    def _recover_feature_error(self):
+        error = self._pending_feature_error
+        if error is None or self._current_state != FOSCliState.CMD_PROMPT:
+            return False
+        failed_work = self.continue_after_error(error, at_command_prompt=True)
+        if failed_work is None:
+            return False
+        self._pending_feature_error = None
+        self.logger.error(
+            "Bootstrap work %s failed; continuing with remaining features "
+            "because FOS_EXIT_ON_BOOTSTRAP_ERROR=false",
+            failed_work,
+        )
+        self._dispatch_next()
+        return True
 
     @property
     def ready(self):
@@ -140,7 +172,7 @@ class FOSCommander:
 
     def tick(self):
         if self._active_feature and hasattr(self._active_feature, "tick"):
-            self._active_feature.tick()
+            self._call_feature(self._active_feature.tick)
 
     def submit_block(self, feature, block):
         if feature is not self._active_feature:
@@ -197,16 +229,36 @@ class FOSCommander:
         if not output:
             return output
         if self._inflight:
-            if self._inflight.on_output(output):
+            if self._call_feature(self._inflight.on_output, output):
                 return output
-            if self._active_feature and self._active_feature.on_output(output):
+            if self._active_feature and self._call_feature(self._active_feature.on_output, output):
                 return output
         self._inspect_output(output)
         return output
 
     def on_state(self, state, output):
         """Called by the driver for every recognized serial state."""
+        self._current_state = state
+        self._callback_failed = False
+        if self._pending_feature_error is not None:
+            if state == FOSCliState.CMD_PROMPT:
+                self._recover_feature_error()
+            elif state == FOSCliState.SESSION_LOST:
+                self._session_epoch += 1
+                self._recovering = True
+            elif state == FOSCliState.CREDENTIAL_ACCEPTED:
+                self._authenticated_once = True
+                self._recovering = False
+            return
         self.on_output(output)
+        if self._callback_failed:
+            if state == FOSCliState.CMD_PROMPT:
+                self._recover_feature_error()
+            return
+        if self._pending_feature_error is not None:
+            if state == FOSCliState.CMD_PROMPT:
+                self._recover_feature_error()
+            return
 
         if state == FOSCliState.SESSION_LOST:
             self._handle_session_loss()
@@ -232,6 +284,8 @@ class FOSCommander:
 
         if state == FOSCliState.CMD_PROMPT and not self._recovering:
             self._dispatch_next()
+        if self._callback_failed and state == FOSCliState.CMD_PROMPT:
+            self._recover_feature_error()
 
     def on_prompt_echo(self, output):
         """Handle a prompt line that had trailing text after the prompt token."""
@@ -279,8 +333,9 @@ class FOSCommander:
             return
         self._active_feature = self._features.popleft()
         self.logger.info(f"Activating feature {self._active_feature.name}")
-        self._active_feature.begin_activation()
-        self._active_feature.activate()
+        self._call_feature(self._active_feature.begin_activation)
+        if self._pending_feature_error is None:
+            self._call_feature(self._active_feature.activate)
 
     def _dispatch_next(self):
         if self._inflight or self._recovering:
@@ -293,7 +348,7 @@ class FOSCommander:
             spec = self._cleanup.popleft()
             self._in_cleanup = True
         elif not self._pending:
-            self._active_feature.on_block_complete()
+            self._call_feature(self._active_feature.on_block_complete)
             return
         else:
             spec = self._pending.popleft()
@@ -301,7 +356,10 @@ class FOSCommander:
         self._attempt_number += 1
         self._inflight = CommandAttempt(spec, self._attempt_number, self._session_epoch)
         if self._active_feature:
-            self._active_feature.on_command_dispatched(self._inflight)
+        if self._active_feature:
+            self._call_feature(self._active_feature.on_command_dispatched, self._inflight)
+            if self._pending_feature_error is not None:
+                return
         if spec.suppress_output:
             self._suppression.enter_context(self.terminal.suppress_output())
         self.logger.log(
@@ -323,13 +381,17 @@ class FOSCommander:
             return
         if self._is_standard_output_command(attempt.spec):
             self._complete_standard_output_command(attempt)
+            if self._pending_feature_error is not None:
+                return
             if not self._recovering:
                 self._dispatch_next()
             return
-        self._active_feature.on_command_executed(attempt, state)
+        self._call_feature(self._active_feature.on_command_executed, attempt, state)
+        if self._pending_feature_error is not None:
+            return
         # The callback may have installed another block (confirmation/query path).
         if not self.busy:
-            self._active_feature.on_block_complete()
+            self._call_feature(self._active_feature.on_block_complete)
         if not self._recovering and state in DISPATCHABLE_COMPLETION_STATES:
             self._dispatch_next()
 
@@ -376,7 +438,7 @@ class FOSCommander:
 
     def _start_standard_output_callback(self, context):
         context.phase = "active"
-        context.callback()
+        self._call_feature(context.callback)
 
     def _finish_standard_output_context(self, feature):
         context = self._standard_output_context
@@ -402,7 +464,12 @@ class FOSCommander:
             self._in_cleanup = False
             return
         self._schedule_feature_cleanup(self._active_feature, "interruption")
-        action = self._active_feature.on_session_loss(attempt)
+        action = self._call_feature(
+            self._active_feature.on_session_loss,
+            attempt,
+        )
+        if self._pending_feature_error is not None:
+            return
         self.logger.info(
             f"Session lost during {self._active_feature.name}/{attempt.spec.line!r}; {action.name.lower()}"
         )

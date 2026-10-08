@@ -243,7 +243,10 @@ class FOSCliDriver:
 
     @staticmethod
     def _license_failed():
-        raise RuntimeError("License setup failed")
+        # SetLicense inspects the buffered command output when FortiOS returns
+        # to a prompt. Raising here would interrupt the driver at LIC_FAIL,
+        # before best-effort bootstrap can safely skip the feature.
+        return None
 
     def _timeout(self):
         self._idle_spins += 1
