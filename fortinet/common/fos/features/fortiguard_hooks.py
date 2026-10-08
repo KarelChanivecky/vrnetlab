@@ -58,10 +58,15 @@ class ConfigureFortiGuardHooks(StaticFeature):
         ])
 
     def on_command_executed(self, command, state):
-        if not self._guard_command or command.spec.line != self._guard_command:
+        if command.spec.line not in (
+            self._guard_command,
+            self._guard_fallback_command,
+        ):
             return
         failed = self._COMMAND_FAILURE.search(bytes(command.output)) is not None
-        if failed and self._guard_fallback_command:
+        if not failed:
+            return
+        if command.spec.line == self._guard_command and self._guard_fallback_command:
             self.commander.submit_block(self, CommandSequence(
                 "hooks-guard-fallback",
                 [CommandSpec(
@@ -70,6 +75,10 @@ class ConfigureFortiGuardHooks(StaticFeature):
                     suppress_output=True,
                 )],
             ))
+            return
+        raise RuntimeError(
+            f"FortiGuard hook command failed: {command.spec.line!r}"
+        )
 
 
 class ReapplyFortiGuardHooks(Feature):

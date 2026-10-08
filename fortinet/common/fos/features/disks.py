@@ -33,15 +33,26 @@ class FormatDisks(Feature):
         if self._phase == "list":
             disk_ref = self._disk_ref(bytes(command.output))
             self.commander.submit_block(self, CommandSequence("disk-format", [
-                CommandSpec(f"exe disk format {disk_ref}", completion_states=(FOSCliState.CONFIRMATION,)),
+                CommandSpec(
+                    f"exe disk format {disk_ref}",
+                    completion_states=(FOSCliState.CONFIRMATION, FOSCliState.CMD_PROMPT),
+                ),
             ]))
             self._phase = "format"
         elif self._phase == "format" and state == FOSCliState.CONFIRMATION:
             self.commander.submit_block(self, CommandSequence("disk-confirm", [
-                CommandSpec("y", completion_states=(FOSCliState.REBOOTING,),
+                CommandSpec("y", completion_states=(FOSCliState.REBOOTING, FOSCliState.CMD_PROMPT),
                             session_loss=SessionLossAction.CONTINUE),
             ]))
             self._phase = "reboot"
+        elif self._phase == "format":
+            raise RuntimeError(
+                f"Disk format command returned unexpected state {state.name}"
+            )
+        elif self._phase == "reboot" and state != FOSCliState.REBOOTING:
+            raise RuntimeError(
+                f"Disk format confirmation returned unexpected state {state.name}"
+            )
 
     def _disk_ref(self, output):
         names = (f"Virtual-Disk{self._disk_number}".encode(), f"HD{self._disk_number}".encode())
