@@ -356,7 +356,6 @@ class FOSCommander:
         self._attempt_number += 1
         self._inflight = CommandAttempt(spec, self._attempt_number, self._session_epoch)
         if self._active_feature:
-        if self._active_feature:
             self._call_feature(self._active_feature.on_command_dispatched, self._inflight)
             if self._pending_feature_error is not None:
                 return
