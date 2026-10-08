@@ -80,13 +80,30 @@ class FOSCommander:
             self._callback_failed = True
             return None
 
+    def handle_driver_error(self, error):
+        """Route a CLI driver error through the bootstrap policy boundary."""
+        if not self._continue_on_error:
+            raise error
+        if self._pending_feature_error is not None:
+            return
+        self.logger.error(
+            "CLI driver reported a bootstrap error: %s",
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        self._pending_feature_error = error
+        self._callback_failed = True
+        if self._current_state == FOSCliState.CMD_PROMPT:
+            self._recover_feature_error()
+
     def _recover_feature_error(self):
         error = self._pending_feature_error
         if error is None or self._current_state != FOSCliState.CMD_PROMPT:
             return False
         failed_work = self.continue_after_error(error, at_command_prompt=True)
         if failed_work is None:
-            return False
+            self._pending_feature_error = None
+            raise error
         self._pending_feature_error = None
         self.logger.error(
             "Bootstrap work %s failed; continuing with remaining features "
@@ -355,7 +372,6 @@ class FOSCommander:
             self._in_cleanup = False
         self._attempt_number += 1
         self._inflight = CommandAttempt(spec, self._attempt_number, self._session_epoch)
-        if self._active_feature:
         if self._active_feature:
             self._call_feature(self._active_feature.on_command_dispatched, self._inflight)
             if self._pending_feature_error is not None:

@@ -241,12 +241,10 @@ class FOSCliDriver:
             self._activate_bootstrap_credentials()
             self._pending_bootstrap_activation = False
 
-    @staticmethod
-    def _license_failed():
-        # SetLicense inspects the buffered command output when FortiOS returns
-        # to a prompt. Raising here would interrupt the driver at LIC_FAIL,
-        # before best-effort bootstrap can safely skip the feature.
-        return None
+    def _license_failed(self):
+        self._commander.handle_driver_error(
+            RuntimeError("License setup failed")
+        )
 
     def _timeout(self):
         self._idle_spins += 1
