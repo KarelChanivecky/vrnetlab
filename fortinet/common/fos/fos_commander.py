@@ -80,9 +80,11 @@ class FOSCommander:
             self._callback_failed = True
             return None
 
-    def _recover_feature_error(self):
+    def _recover_feature_error(self, *, at_idle_prompt=False):
         error = self._pending_feature_error
-        if error is None or self._current_state != FOSCliState.CMD_PROMPT:
+        if error is None or (
+            self._current_state != FOSCliState.CMD_PROMPT and not at_idle_prompt
+        ):
             return False
         failed_work = self.continue_after_error(error, at_command_prompt=True)
         if failed_work is None:
@@ -171,6 +173,8 @@ class FOSCommander:
         self._features.extend(features)
 
     def tick(self):
+        if self._pending_feature_error is not None:
+            return
         if self._active_feature and hasattr(self._active_feature, "tick"):
             self._call_feature(self._active_feature.tick)
 
@@ -299,8 +303,13 @@ class FOSCommander:
             output.discard()
 
     def on_idle_prompt(self):
-        """Dispatch work queued by tick callbacks while already at a prompt."""
+        """Recover errors or dispatch work while idle at a known prompt."""
         if self._inflight or self._recovering:
+            return
+        if self._pending_feature_error is not None:
+            # The driver calls this after a read timeout at a known CLI prompt.
+            # on_state has since recorded TN_TIMEOUT, so recover explicitly.
+            self._recover_feature_error(at_idle_prompt=True)
             return
         if self._pending or self._cleanup or self._active_feature is None:
             self._dispatch_next()
