@@ -18,8 +18,25 @@ make
 
 The image will be tagged based on the version in the filename (e.g., `vrnetlab/extreme_exos:32.7.2.19`).
 
+## Running on an AMD CPU
+
+EXOS does not boot on a host with an AMD CPU with the default `-cpu host`. The console shows `Warning. Could not determine the CPU Family.` and the VM stops at the EXOS developer menu, so the bootstrap never completes.
+
+Workaround: set the `QEMU_CPU` environment variable to `core2duo`, e.g. in a containerlab topology:
+
+```yaml
+    env:
+      QEMU_CPU: core2duo
+```
+
 ## Tested versions
 
-- `EXOS-VM_v32.6.3.126.qcow2`
-- `EXOS-VM_32.7.2.19.qcow2`
-- `EXOS-VM_33.1.1.31.qcow2`
+On an AMD EPYC host, 32.6.3.126, 32.7.2.19 and 33.6.1.14 boot with `QEMU_CPU=core2duo`, and both management passthrough and the startup-config bind work.
+33.1.1.31 doesn't boot on AMD with any CPU setting tried.
+
+| Image                       | Intel CPU | AMD CPU                          |
+| --------------------------- | --------- | -------------------------------- |
+| `EXOS-VM_v32.6.3.126.qcow2` | OK        | OK with `QEMU_CPU=core2duo`      |
+| `EXOS-VM_32.7.2.19.qcow2`   | OK        | OK with `QEMU_CPU=core2duo`      |
+| `EXOS-VM_33.1.1.31.qcow2`   | OK        | Not working, no setting found    |
+| `EXOS-VM_33.6.1.14.qcow2`   | OK        | OK with `QEMU_CPU=core2duo`      |

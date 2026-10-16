@@ -8,6 +8,7 @@ import math
 import os
 import random
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -97,6 +98,16 @@ class _Console:
         self._driver.channel.write(data)
 
     def _read(self):
+        # channel.read() blocks until timeout_transport (3600 s) when the console is silent,
+        # so the timeout in read_until()/expect() is never evaluated and a missing prompt
+        # hangs the bootstrap. Poll the socket first and return nothing if no data is ready.
+        transport = self._driver.transport
+        sock = getattr(getattr(transport, "socket", None), "sock", None)
+        pending = getattr(transport, "_raw_buf", b"") or getattr(transport, "_cooked_buf", b"")
+        if sock is not None and not pending:
+            readable, _, _ = select.select([sock], [], [], 0.1)
+            if not readable:
+                return b""
         data = self._driver.channel.read()
         if data:
             # mirror console output to stdout so it shows up in docker logs
@@ -257,6 +268,9 @@ class VM:
         self.fake_start_date = None
         self.nic_type = "e1000"
         self.num_nics = 0
+        self.num_mgmt_nics = 1
+        # whether the container/VM can be started without the mgmt interface
+        self.supports_mgmtless = False
         # number of nics that are actually *provisioned* (as in nics that will be added to container)
         self.num_provisioned_nics = int(os.environ.get("CLAB_INTFS", 0))
         # "highest" provisioned nic num -- used for making sure we can allocate nics without needing
@@ -474,7 +488,13 @@ class VM:
                 cmd.extend(["-device", f"pci-bridge,chassis_nr={i},id=pci.{i}"])
 
         # generate mgmt NICs
-        cmd.extend(self.gen_mgmt())
+        has_mgmt_intf = os.path.exists(f"/sys/class/net/{self.mgmt_intf}")
+        if has_mgmt_intf or not self.supports_mgmtless:
+            self.num_mgmt_nics = 1
+            cmd.extend(self.gen_mgmt())
+        else:
+            self.num_mgmt_nics = 0
+            self.logger.info(f"No management interface ({self.mgmt_intf}) present")
         # generate normal NICs
         cmd.extend(self.gen_nics())
         # generate dummy NICs
@@ -483,8 +503,11 @@ class VM:
 
         self.logger.debug("qemu cmd: {}".format(" ".join(cmd)))
 
+        # exec: let bash replace itself with qemu. Otherwise the fd redirections used by the
+        # macvtap datapath keep bash as the parent, stop() only terminates bash and qemu is
+        # orphaned holding the monitor/serial ports.
         self.p = subprocess.Popen(
-            " ".join(cmd),
+            "exec " + " ".join(cmd),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,
@@ -862,8 +885,8 @@ class VM:
         inf_path = Path("/sys/class/net/")
         while True:
             provisioned_nics = list(inf_path.glob(f"{self.data_intf_prefix}*"))
-            # if we see num provisioned +1 (for mgmt) we have all nics ready to roll!
-            if len(provisioned_nics) >= self.num_provisioned_nics + 1:
+            # if we see num_provisioned_nics + num_mgmt_nics (default 1) we have all NICs ready to roll!
+            if len(provisioned_nics) >= self.num_provisioned_nics + self.num_mgmt_nics:
                 nics = [
                     int(re.search(pattern=r"\d+", string=nic.name).group())
                     for nic in provisioned_nics
@@ -993,9 +1016,10 @@ class VM:
 
             mac = None
             # If restoring from snapshot, use saved MAC addresses
-            # MAC at index 0 is management, so data plane NICs start at index 1
+            # The management MAC, if any, comes first, so data plane NICs
+            # start at index num_mgmt_nics
             if self.snapshot_metadata and "mac_addresses" in self.snapshot_metadata:
-                mac_index = 1 + (i - start_eth)
+                mac_index = self.num_mgmt_nics + (i - start_eth)
                 if mac_index < len(self.snapshot_metadata["mac_addresses"]):
                     mac = self.snapshot_metadata["mac_addresses"][mac_index]
                     self.logger.info(f"Using saved MAC from snapshot for eth{i}: {mac}")

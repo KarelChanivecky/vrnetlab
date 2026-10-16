@@ -59,7 +59,7 @@ class VJUNOSEVOLVED_vm(vrnetlab.VM):
         # device hostname
         self.hostname = hostname
         # create SHA-512 hash of the password
-        password_hash = sha512_crypt.hash("admin@123")
+        password_hash = sha512_crypt.hash(password)
 
         # read init.conf configuration file to replace hostname placeholder
         # with given hostname
@@ -225,8 +225,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hostname", default="vr-vjunosevolved", help="vJunosEvolved hostname"
     )
-    parser.add_argument("--username", default="vrnetlab", help="Username")
-    parser.add_argument("--password", default="VR-netlab9", help="Password")
+    parser.add_argument("--username", default="admin", help="Username") # not taken into account for this platform
+    parser.add_argument("--password", default="admin@123", help="Password")
     parser.add_argument(
         "--connection-mode", default="tc", help="Connection mode to use in the datapath"
     )

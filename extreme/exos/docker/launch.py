@@ -117,9 +117,6 @@ class EXOS_vm(vrnetlab.VM):
                 self.logger.info("Running bootstrap_config()")
                 self.bootstrap_config()
                 self.startup_config()
-                (ridx, match, res) = self.tn.expect(
-                    [rb'node is now available for login.'], 1
-                )
                 time.sleep(1)
                 # close telnet connection
                 self.tn.close()
@@ -146,8 +143,8 @@ class EXOS_vm(vrnetlab.VM):
         """
         self.wait_write_config(cmd=f"configure snmp sysName {self.hostname}")
         self.wait_write_config(cmd="unconfigure vlan Mgmt ipaddress")
-        self.wait_write_config(cmd="configure vlan Mgmt ipaddress 10.0.0.15/24")
-        self.wait_write_config(cmd="configure iproute add default 10.0.0.2 vr VR-Mgmt")
+        self.wait_write_config(cmd=f"configure vlan Mgmt ipaddress {self.mgmt_address_ipv4}")
+        self.wait_write_config(cmd=f"configure iproute add default {self.mgmt_gw_ipv4} vr VR-Mgmt")
         if self.username == "admin":
             self.wait_write(cmd="configure account admin password", wait="#")
             self.wait_write(cmd="", wait="Current user's password:")
@@ -165,13 +162,26 @@ class EXOS_vm(vrnetlab.VM):
     def startup_config(self):
         if not os.path.exists(STARTUP_CONFIG_FILE):
             self.logger.trace(f"Startup config file {STARTUP_CONFIG_FILE} not found")
-            self.wait_write(cmd="enable cli prompting", wait="#")
+            self.wait_write_config(cmd="enable cli prompting")
             return
-        vrnetlab.run_command(["cp", STARTUP_CONFIG_FILE, "/tftpboot/containerlab.xsf"])
-        self.wait_write(cmd="tftp get 10.0.0.2 vr VR-Mgmt containerlab.xsf", wait=None)
-        self.wait_write(cmd="load script containerlab.xsf", wait="#")
-        self.wait_write(cmd="save", wait="#")
-        self.wait_write(cmd="enable cli prompting", wait="#")
+        if not self.mgmt_passthrough:
+            # qemu user-mode network serves /tftpboot on 10.0.0.2
+            vrnetlab.run_command(["cp", STARTUP_CONFIG_FILE, "/tftpboot/containerlab.xsf"])
+            self.wait_write_config(cmd="tftp get 10.0.0.2 vr VR-Mgmt containerlab.xsf")
+            self.wait_write_config(cmd="load script containerlab.xsf")
+        else:
+            # Transparent mgmt: no TFTP server reachable, push the config over
+            # the serial console instead (cli prompting is still disabled here).
+            with open(STARTUP_CONFIG_FILE) as file:
+                config_lines = [line.rstrip() for line in file.readlines()]
+
+            self.logger.info(f"Writing lines from {STARTUP_CONFIG_FILE}")
+            for line in config_lines:
+                if not line or line.startswith("#"):
+                    continue
+                self.wait_write_config(cmd=line)
+        self.wait_write_config(cmd="save")
+        self.wait_write_config(cmd="enable cli prompting")
 
 
 class EXOS(vrnetlab.VR):

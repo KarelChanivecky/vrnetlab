@@ -148,15 +148,22 @@ class VOSS_vm(vrnetlab.VM):
         self.wait_write_config(cmd="enable", wait="#")
         self.wait_write_config(cmd="configure terminal", wait="#")
         self.wait_write_config(cmd=f"sys name {self.hostname}", wait="#")
-        self.wait_write_config(cmd="mgmt oob")
-        # time.sleep(120)  # Wait for the mgmt interface to come up
-        self.wait_write_config(
-            cmd="convert ip 10.0.0.15/24 gateway 10.0.0.2",
-            wait="(y/n) ?",
-            error_patterns=["an ip address is mandatory"],
-        )
+        # VOSS boots in ZTP mode with "mgmt dhcp-client cycle", which keeps
+        # requesting DHCP on the oob and onboarding VLAN interfaces. Without a
+        # DHCP server (transparent mgmt) it puts a 169.254.x.x link-local address
+        # on oob every cycle, so disable it before configuring oob statically.
+        self.wait_write_config(cmd="no mgmt dhcp-client", wait="#")
+        # Recreate the oob instance, then configure 10.0.0.15/24 (qemu user-mode
+        # network) or the container's address (transparent mgmt) statically.
+        self.wait_write_config(cmd="no mgmt oob", wait="(y/n) ?")
         self.wait_write_config(cmd="y", wait="#")
-        self.wait_write_config(cmd="mgmt convert-commit", wait="#")
+        self.wait_write_config(cmd="mgmt oob", wait="#")
+        self.wait_write_config(cmd=f"ip address {self.mgmt_address_ipv4}", wait="#")
+        self.wait_write_config(
+            cmd=f"ip route 0.0.0.0/0 next-hop {self.mgmt_gw_ipv4}", wait="#"
+        )
+        self.wait_write_config(cmd="enable", wait="#")
+        self.wait_write_config(cmd="exit", wait="#")
         self.wait_write_config(
             cmd=f"username add {self.username} level rwa enable", wait="assword"
         )
@@ -169,10 +176,38 @@ class VOSS_vm(vrnetlab.VM):
         if not os.path.exists(STARTUP_CONFIG_FILE):
             self.logger.trace(f"Startup config file {STARTUP_CONFIG_FILE} not found")
             return
-        vrnetlab.run_command(["cp", STARTUP_CONFIG_FILE, "/tftpboot/containerlab.xsf"])
-        self.wait_write(cmd="tftp get 10.0.0.2 vr VR-Mgmt containerlab.xsf", wait=None)
-        self.wait_write(cmd="load script containerlab.xsf", wait="#")
-        self.wait_write(cmd="save config", wait="#")
+        if not self.mgmt_passthrough:
+            # qemu user-mode network serves /tftpboot on 10.0.0.2.
+            # "source" always runs the file from privileged exec mode, so it must
+            # enter config mode itself, like a saved VOSS config does.
+            with open(STARTUP_CONFIG_FILE) as file:
+                config = file.read()
+            commands = [line.strip() for line in config.splitlines()]
+            commands = [line for line in commands if line and not line.startswith("#")]
+            if not (commands and commands[0].startswith("conf")):
+                config = f"configure terminal\n{config}\nend\n"
+            with open("/tftpboot/containerlab.cfg", "w") as file:
+                file.write(config)
+            self.wait_write_config(
+                cmd="copy 10.0.0.2:containerlab.cfg /intflash/containerlab.cfg", wait="#"
+            )
+            self.wait_write_config(cmd="source /intflash/containerlab.cfg", wait="#")
+            self.wait_write_config(cmd="save config", wait="#")
+            return
+
+        # Transparent mgmt: no TFTP server reachable, push the config over the
+        # serial console instead.
+        with open(STARTUP_CONFIG_FILE) as file:
+            config_lines = [line.rstrip() for line in file.readlines()]
+
+        self.logger.info(f"Writing lines from {STARTUP_CONFIG_FILE}")
+        self.wait_write_config(cmd="configure terminal", wait="#")
+        for line in config_lines:
+            if not line or line.startswith("#"):
+                continue
+            self.wait_write_config(cmd=line, wait="#")
+        self.wait_write_config(cmd="end", wait="#")
+        self.wait_write_config(cmd="save config", wait="#")
 
 
 class VOSS(vrnetlab.VR):

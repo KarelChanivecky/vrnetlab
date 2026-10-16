@@ -20,6 +20,8 @@ The image will be tagged based on the version in the filename (e.g., `vrnetlab/e
 
 ## Tested versions
 
+Mgmt Passthrough and Config via binds tested on the following VOSS QCOW2 images:
+
 - `VOSS-VM_v9.4.0.0.qcow2`
 - `VOSS-VM_v9.3.1.0.qcow2`
 - `VOSS-VM_v8.10.1.0.qcow2`

@@ -113,8 +113,8 @@ class AOSCX_vm(vrnetlab.VM):
 
         # configure mgmt interface
         self.wait_write("interface mgmt")
-        self.wait_write("ip static 10.0.0.15/24")
-        self.wait_write("default-gateway 10.0.0.2")
+        self.wait_write(f"ip static {self.mgmt_address_ipv4}")
+        self.wait_write(f"default-gateway {self.mgmt_gw_ipv4}")
         self.wait_write("no shutdown")
         self.wait_write("exit")
         self.wait_write("ssh server vrf mgmt")
