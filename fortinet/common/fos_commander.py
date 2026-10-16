@@ -394,12 +394,13 @@ class FOSCommander:
             if not self._recovering:
                 self._dispatch_next()
             return
-        self._call_feature(self._active_feature.on_command_executed, attempt, state)
+        completed_feature = self._active_feature
+        self._call_feature(completed_feature.on_command_executed, attempt, state)
         if self._pending_feature_error is not None:
             return
         # The callback may have installed another block (confirmation/query path).
-        if not self.busy:
-            self._call_feature(self._active_feature.on_block_complete)
+        if not self.busy and self._active_feature is completed_feature:
+            self._call_feature(completed_feature.on_block_complete)
         if not self._recovering and state in DISPATCHABLE_COMPLETION_STATES:
             self._dispatch_next()
 

@@ -282,7 +282,7 @@ class FOSCliDriver:
         if isinstance(name_pattern, str):
             name_pattern = re.escape(name_pattern.encode())
         self._state_patterns[FOSCliState.PROVIDE_USERNAME.value] = rb"(?m)^[ \t]*" + name_pattern + rb"[ \t]+login:[ \t]*"
-        self._state_patterns[FOSCliState.CMD_PROMPT.value] = rb"(?m)^[ \t]*" + name_pattern + PROMPT_CONTEXT_REGEX + rb"[ \t]*[#$][ \t]*$"
+        self._state_patterns[FOSCliState.CMD_PROMPT.value] = rb"(?m)^[ \t]*" + name_pattern + PROMPT_CONTEXT_REGEX + rb"[ \t]*[#$][ \t]*\r?$"
         self._state_patterns[FOSCliState.CMD_PROMPT_ECHO.value] = rb"(?m)^[ \t]*" + name_pattern + PROMPT_CONTEXT_REGEX + rb"[ \t]*[#$][ \t]*[^\r\n]+(?:\r?\n)?"
 
     def _credential_rejected(self):

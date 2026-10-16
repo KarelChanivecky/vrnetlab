@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from fos.launch import main
+from common.launch import main
 
 
 if __name__ == "__main__":

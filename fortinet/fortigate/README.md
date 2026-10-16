@@ -42,18 +42,20 @@ topology:
       enforce-startup-config: true
       startup-config: configs/fgt.conf
       license: licenses/appliance.lic
+      dns:
+        servers:
+          - 1.1.1.1
+          - 8.8.8.8
       credentials:
         username: admin
         password: admin
       env:
         CLAB_MGMT_PASSTHROUGH: "true"
-        FOS_DISK_SPECS: "10g,10g"
-        FOS_LICENSE_STATUS_TIMEOUT_SECONDS: "120"
-        FOS_LOG_LEVEL: "DEBUG"
-        FOS_MGMT_DNS_PRIMARY: "1.1.1.1"
-        FOS_MGMT_DNS_SECONDARY: "8.8.8.8"
-        FOS_NO_ENC_CONFIG: "false"
-        FOS_ONBOARDING: "false"
+        FTNT_DISK_SPECS: "10g,10g"
+        FTNT_LICENSE_STATUS_TIMEOUT_SECONDS: "120"
+        FTNT_LOG_LEVEL: "DEBUG"
+        FTNT_NO_ENC_CONFIG: "false"
+        FTNT_ONBOARDING: "false"
         UUID: "6c6323d5-0713-58eb-9458-4f8803a2cd93"
 ```
 
@@ -77,32 +79,41 @@ default password.
 `enforce-startup-config: true` is recommended so Containerlab always mounts and
 applies the intended startup config.
 
+Containerlab's `dns.servers` setting configures the container resolver. During
+bootstrap, the launcher uses its first two nameservers for FortiOS DNS unless
+`FTNT_DNS_PRIMARY` or `FTNT_DNS_SECONDARY` overrides them. If the container has
+no configured nameservers, the defaults are `1.1.1.1` and `8.8.8.8`.
+
 ## Environment Variables
 
 | Variable | Default | Values | Description |
 | --- | --- | --- | --- |
 | `CLAB_MGMT_PASSTHROUGH` | `true` | `true`, `false` | Selects management wiring. `true` uses tap/tc passthrough so the FortiGate management interface participates directly in the Containerlab management network. `false` uses a host-forwarded bridge inside the vrnetlab container. |
-| `FOS_DISK_SPECS` | unset | comma-separated `qemu-img create` sizes, for example `10g` or `10g,10g` | Adds extra virtio disks. One disk becomes the FortiGate log disk. Additional disks are formatted during bootstrap; the second disk is expected to become WAN optimization storage on FortiOS versions that support it. |
-| `FOS_DEBUG_FEATURE` | unset | feature name | Runs bootstrap only through the named feature, then skips later features. Public feature order: `image-info`, `product-validation`, `disk-format`, `admin`, `management`, `bootstrap-dns`, `fortiguard-hooks`, `setup-license`, `fortiguard-hooks-after-license`, `default-config`, `management-after-license`, `license-validation`, `fortitoken-provisioning`, `pki-certificates`, `management-vrf`, `capture-config`, `startup-config`. |
-| `FOS_EXIT_ON_BOOTSTRAP_ERROR` | `true` | `true`, `false` | Stops the launcher with a nonzero exit status when a bootstrap feature raises an error. With `false`, a failed feature is skipped and later features continue when FortiOS is back at a command prompt. After a rejected desired-password login, the launcher always retries the last accepted credentials once for that login while retaining the desired credentials for subsequent logins. It does not replay an admin password change after FortiOS has committed it. Unrecoverable console or login errors leave the VM running, release the launcher's serial Telnet connection, and halt bootstrap for manual repair. Unresolved recovery or skipped features keep the VM unhealthy; a later successful login with the desired credentials clears a transient credential-recovery error. |
-| `FOS_HEALTHCHECK_STALL_SECONDS` | `90` | seconds | How long the Docker healthcheck probe waits for a launcher heartbeat before reporting failure. Only relevant for diagnostics; the launcher must stay responsive within this window. See [Container Healthcheck](#container-healthcheck). |
-| `FOS_HEARTBEAT_FILE` | `/healthbeat` | container path | File the launcher appends one byte to on every main-loop iteration; the healthcheck probe watches it to distinguish a slow bootstrap from a wedged launcher. |
-| `FOS_LOG_LICENSE_STATUS_OUTPUT` | `false` | `true`, `false` | When `true`, logs the first full `get system status` response captured for each distinct license status. Useful for diagnosing license-status parsing. |
-| `FOS_LICENSE_STATUS_TIMEOUT_SECONDS` | `120` | seconds | Maximum time to poll `get system status` while waiting for license validation. `Pending` is always retried; `Grace Period` is retried only when `FOS_WAIT_FOR_VALID_LICENSE=true`. |
-| `FOS_LOG_LEVEL` | `DEBUG` | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or numeric Python log level | Sets launcher log verbosity. |
-| `FOS_MGMT_DNS_PRIMARY` | `1.1.1.1` | IPv4 address | Sets the primary DNS server configured during bootstrap for license and FortiGuard reachability. The setting persists after bootstrap; the launcher does not remove it. |
-| `FOS_MGMT_DNS_SECONDARY` | `8.8.8.8` | IPv4 address | Sets the secondary DNS server configured during bootstrap. Like the primary, it persists after bootstrap. The legacy misspelling `FOS_MGMG_DNS_SECONDARY` remains accepted. |
-| `FOS_NO_ENC_CONFIG` | `false` | `true`, `false` | When `true`, ignores ENC-only changes on entries that already exist in the baseline. New entries and entries with other changes retain their encrypted fields. |
-| `FOS_ONBOARDING` | `false` | `true`, `false` | When `true`, disables the HTTPS redirect and automatic-upgrade setup warning in the default FortiOS GUI configuration. |
-| `FOS_SKIP_PRODUCT_CHECK` | `false` | `true`, `false` | Skips validation that the image reports the expected product family and satisfies `FOS_PRODUCT_VERSION`. General FortiOS version detection still runs during bootstrap. |
-| `FOS_WAIT_FOR_VALID_LICENSE` | `false` | `true`, `false` | When `true`, keeps polling while the license status is `Grace Period` and only accepts `Valid`. By default, `Grace Period` is accepted so bootstrap can continue. |
-| `FOS_PRODUCT_VERSION` | unset | `8`, `8.0`, `8.0.1`, `8.b278`, `8.0.b278`, `8.0.1.b278`, or an inclusive range such as `7.2-8.0.1` | Constrains the reported product version. A release prefix accepts that version line (`8` accepts 8.x; `8.0` accepts 8.0.x; `8.0.1` accepts builds for exactly 8.0.1). Add `.bNNN` to require an exact build on the selected line (`M.m.p.b#`); build numbers may be zero-padded to four digits, such as `.b0123`. Four numeric components such as `M.m.p.#` are invalid. An unset or empty value leaves version selection in automatic mode. |
-| `FOS_PKI_CA_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Trusts CA certificates by typing the PEM into `config vpn certificate ca`. The object is named after the refname when given, otherwise the certificate CN. |
-| `FOS_PKI_LOCAL_CERTS` | unset | semicolon-separated `refname:key_path:cert_path` entries | Installs local certificate/private-key pairs, including the SSL deep-inspection CA pair, by typing the PEM contents into `config vpn certificate local`. Both files are required. The object is named after the refname when given, otherwise the certificate CN; use an empty refname (`:key_path:cert_path`) to imply the name. |
-| `FOS_PKI_LOCAL_CERT_PASS_FILES` | unset | semicolon-separated file paths | Optional password files whose contents are typed as `set password` for encrypted private keys, paired positionally with keyed `FOS_PKI_LOCAL_CERTS` entries. |
-| `FOS_PKI_REMOTE_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Installs remote peer certificates by typing the PEM into `config vpn certificate remote`. The object is named after the refname when given, otherwise the certificate CN. |
-| `FOS_PKI_CRLS` | unset | semicolon-separated `refname:path` CRL entries | Installs CRLs as base64 bodies in `config vpn certificate crl` when that tree is available. Older releases without a CRL config tree use `execute vpn certificate crl import tftp`. The object is named after the refname when given, otherwise the file basename. |
+| `FTNT_DISK_SPECS` | unset | comma-separated `qemu-img create` sizes, for example `10g` or `10g,10g` | Adds extra virtio disks. One disk becomes the FortiGate log disk. Additional disks are formatted during bootstrap; the second disk is expected to become WAN optimization storage on FortiOS versions that support it. |
+| `FTNT_DEBUG_FEATURE` | unset | feature name | Runs bootstrap only through the named feature, then skips later features. Public feature order: `image-info`, `product-validation`, `disk-format`, `admin`, `management`, `bootstrap-dns`, `fortiguard-hooks`, `setup-license`, `fortiguard-hooks-after-license`, `default-config`, `management-after-license`, `license-validation`, `fortitoken-provisioning`, `pki-certificates`, `management-vrf`, `capture-config`, `startup-config`. |
+| `FTNT_DNS_PRIMARY` | first container nameserver, otherwise `1.1.1.1` | IPv4 address | Sets the primary FortiOS DNS server. |
+| `FTNT_DNS_SECONDARY` | second container nameserver, otherwise `8.8.8.8` | IPv4 address | Sets the secondary FortiOS DNS server. |
+| `FTNT_DNS_PROTOCOL` | `cleartext` | `cleartext`, `dot`, `doh` | Sets DNS over UDP/TCP 53, DNS over TLS 853, or DNS over HTTPS 443. FortiOS versions that do not support this setting may reject it; that command failure is ignored. |
+| `FTNT_EXIT_ON_BOOTSTRAP_ERROR` | `true` | `true`, `false` | Stops the launcher with a nonzero exit status when a bootstrap feature raises an error. With `false`, a failed feature is skipped and later features continue when FortiOS is back at a command prompt. After a rejected desired-password login, the launcher always retries the last accepted credentials once for that login while retaining the desired credentials for subsequent logins. It does not replay an admin password change after FortiOS has committed it. Unrecoverable console or login errors leave the VM running, release the launcher's serial Telnet connection, and halt bootstrap for manual repair. Unresolved recovery or skipped features keep the VM unhealthy; a later successful login with the desired credentials clears a transient credential-recovery error. |
+| `FTNT_HEALTHCHECK_STALL_SECONDS` | `90` | seconds | How long the Docker healthcheck probe waits for a launcher heartbeat before reporting failure. Only relevant for diagnostics; the launcher must stay responsive within this window. See [Container Healthcheck](#container-healthcheck). |
+| `FTNT_HEARTBEAT_FILE` | `/healthbeat` | container path | File the launcher appends one byte to on every main-loop iteration; the healthcheck probe watches it to distinguish a slow bootstrap from a wedged launcher. |
+| `FTNT_LOG_LICENSE_STATUS_OUTPUT` | `false` | `true`, `false` | When `true`, logs the first full `get system status` response captured for each distinct license status. Useful for diagnosing license-status parsing. |
+| `FTNT_LICENSE_STATUS_TIMEOUT_SECONDS` | `120` | seconds | Maximum time to poll `get system status` while waiting for license validation. `Pending` is always retried; `Grace Period` is retried only when `FTNT_WAIT_FOR_VALID_LICENSE=true`. |
+| `FTNT_LOG_LEVEL` | `DEBUG` | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or numeric Python log level | Sets launcher log verbosity. |
+| `FTNT_NO_ENC_CONFIG` | `false` | `true`, `false` | When `true`, ignores ENC-only changes on entries that already exist in the baseline. New entries and entries with other changes retain their encrypted fields. |
+| `FTNT_ONBOARDING` | `false` | `true`, `false` | When `true`, disables the HTTPS redirect and automatic-upgrade setup warning in the default FortiOS GUI configuration. |
+| `FTNT_SKIP_PRODUCT_CHECK` | `false` | `true`, `false` | Skips validation that the image reports the expected product family and satisfies `FTNT_PRODUCT_VERSION`. General FortiOS version detection still runs during bootstrap. |
+| `FTNT_WAIT_FOR_VALID_LICENSE` | `false` | `true`, `false` | When `true`, keeps polling while the license status is `Grace Period` and only accepts `Valid`. By default, `Grace Period` is accepted so bootstrap can continue. |
+| `FTNT_PRODUCT_VERSION` | unset | `8`, `8.0`, `8.0.1`, `8.b278`, `8.0.b278`, `8.0.1.b278`, or an inclusive range such as `7.2-8.0.1` | Constrains the reported product version. A release prefix accepts that version line (`8` accepts 8.x; `8.0` accepts 8.0.x; `8.0.1` accepts builds for exactly 8.0.1). Add `.bNNN` to require an exact build on the selected line (`M.m.p.b#`); build numbers may be zero-padded to four digits, such as `.b0123`. Four numeric components such as `M.m.p.#` are invalid. An unset or empty value leaves version selection in automatic mode. |
+| `FTNT_PKI_CA_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Trusts CA certificates by typing the PEM into `config vpn certificate ca`. The object is named after the refname when given, otherwise the certificate CN. |
+| `FTNT_PKI_LOCAL_CERTS` | unset | semicolon-separated `refname:key_path:cert_path` entries | Installs local certificate/private-key pairs, including the SSL deep-inspection CA pair, by typing the PEM contents into `config vpn certificate local`. Both files are required. The object is named after the refname when given, otherwise the certificate CN; use an empty refname (`:key_path:cert_path`) to imply the name. |
+| `FTNT_PKI_LOCAL_CERT_PASS_FILES` | unset | semicolon-separated file paths | Optional password files whose contents are typed as `set password` for encrypted private keys, paired positionally with keyed `FTNT_PKI_LOCAL_CERTS` entries. |
+| `FTNT_PKI_REMOTE_CERTS` | unset | semicolon-separated `refname:path` PEM entries | Installs remote peer certificates by typing the PEM into `config vpn certificate remote`. The object is named after the refname when given, otherwise the certificate CN. |
+| `FTNT_PKI_CRLS` | unset | semicolon-separated `refname:path` CRL entries | Installs CRLs as base64 bodies in `config vpn certificate crl` when that tree is available. Older releases without a CRL config tree use `execute vpn certificate crl import tftp`. The object is named after the refname when given, otherwise the file basename. |
 | `UUID` | random UUID | UUID string | Sets the QEMU VM UUID. If unset, vrnetlab generates a random UUID for the VM instance. |
+
+The `FTNT_` names are the documented environment interface. Existing
+environment variable names remain accepted during the compatibility period.
 
 Containerlab also passes the usual vrnetlab launch arguments such as hostname,
 username, password, and connection mode. For manual runs these are available as
@@ -160,9 +171,10 @@ end
 The importer validates basic `config` / `edit` / `next` / `end` nesting and
 fails startup on malformed structure.
 
-The bootstrap DNS servers (`FOS_MGMT_DNS_PRIMARY` / `FOS_MGMT_DNS_SECONDARY`)
-persist through startup config application. When `FOS_FORTIGUARD_HOOKS` is set
-together with either DNS variable, a `config system dns` block in the startup
+The bootstrap DNS servers selected from the container resolver or
+`FTNT_DNS_PRIMARY` / `FTNT_DNS_SECONDARY` persist through startup config
+application. When `FTNT_FORTIGUARD_HOOKS` is set together with either DNS
+variable or `FTNT_DNS_PROTOCOL`, a `config system dns` block in the startup
 config is skipped with a warning so it cannot override the launcher's DNS.
 
 ## Default Startup Configuration
@@ -208,8 +220,8 @@ end
 
 config system global
     set admin-scp enable
-    set admin-https-redirect disable             # when FOS_ONBOARDING=true
-    set gui-auto-upgrade-setup-warning disable   # when FOS_ONBOARDING=true
+    set admin-https-redirect disable             # when FTNT_ONBOARDING=true
+    set gui-auto-upgrade-setup-warning disable   # when FTNT_ONBOARDING=true
     set hostname <node-name>
 end
 
@@ -229,10 +241,10 @@ config system console
 end
 ```
 
-The DNS servers selected by `FOS_MGMT_DNS_PRIMARY` and
-`FOS_MGMT_DNS_SECONDARY` are configured during bootstrap and are not removed
-afterwards; they persist into the captured baseline and the final
-configuration.
+The DNS servers selected from the container resolver or
+`FTNT_DNS_PRIMARY` / `FTNT_DNS_SECONDARY` are configured during bootstrap and
+are not removed afterwards; they persist into the captured baseline and the
+final configuration.
 
 When a license is installed, the launcher reapplies management configuration
 after the license reboot and attempts to place `port1` and route `9999` in VRF
@@ -253,25 +265,25 @@ bootstrap.
 
 After installation, the launcher polls `get system status`. `Pending` is
 retried until the status changes. By default, `Grace Period` is accepted so
-bootstrap can continue; set `FOS_WAIT_FOR_VALID_LICENSE=true` to keep polling
+bootstrap can continue; set `FTNT_WAIT_FOR_VALID_LICENSE=true` to keep polling
 until the status is `Valid`. Other non-valid statuses fail validation
 immediately. The default polling timeout is 2 minutes; set
-`FOS_LICENSE_STATUS_TIMEOUT_SECONDS` to change it.
+`FTNT_LICENSE_STATUS_TIMEOUT_SECONDS` to change it.
 
 ## PKI Certificates
 
-Set the `FOS_PKI_*` variables to install certificates, CAs, and CRLs at
+Set the `FTNT_PKI_*` variables to install certificates, CAs, and CRLs at
 bootstrap. All variables carry file paths only — the plugin stages the PEM
 files and the launcher reads their contents; certificate, key, and password
 bytes never travel through the environment.
 
 ```yaml
 envs:
-  FOS_PKI_CA_CERTS: "root:/lab/root-ca.pem;intermediate:/lab/intermediate.pem"
-  FOS_PKI_LOCAL_CERTS: "server:/lab/server.key:/lab/server.pem;dca:/lab/dca.key:/lab/dca.pem"
-  FOS_PKI_LOCAL_CERT_PASS_FILES: "/lab/server.pass"
-  FOS_PKI_REMOTE_CERTS: "peer:/lab/peer.pem"
-  FOS_PKI_CRLS: "issuer:/lab/issuer.crl"
+  FTNT_PKI_CA_CERTS: "root:/lab/root-ca.pem;intermediate:/lab/intermediate.pem"
+  FTNT_PKI_LOCAL_CERTS: "server:/lab/server.key:/lab/server.pem;dca:/lab/dca.key:/lab/dca.pem"
+  FTNT_PKI_LOCAL_CERT_PASS_FILES: "/lab/server.pass"
+  FTNT_PKI_REMOTE_CERTS: "peer:/lab/peer.pem"
+  FTNT_PKI_CRLS: "issuer:/lab/issuer.crl"
 ```
 
 Entries are `;`-separated and always start with a refname field followed
@@ -281,16 +293,16 @@ file basename for CRLs. Local certificate entries require both a private key
 and certificate. A bare `key_path:cert_path` without the leading refname field
 is rejected; use `:key_path:cert_path` for CN-derived naming.
 
-- `FOS_PKI_CA_CERTS` and `FOS_PKI_REMOTE_CERTS` entries are first typed into
+- `FTNT_PKI_CA_CERTS` and `FTNT_PKI_REMOTE_CERTS` entries are first typed into
   their respective `config vpn certificate` trees and named by refname or CN.
-- `FOS_PKI_LOCAL_CERTS` entries are typed into
+- `FTNT_PKI_LOCAL_CERTS` entries are typed into
   `config vpn certificate local` as quoted multi-line PEM values named by
   refname or CN. Every entry must supply its private key before its certificate.
   The same mechanism covers server certificates and the SSL deep-inspection CA
   pair.
-- `FOS_PKI_LOCAL_CERT_PASS_FILES` entries pair positionally with
-  keyed `FOS_PKI_LOCAL_CERTS` entries whose private keys are encrypted.
-- `FOS_PKI_CRLS` entries are installed as base64 bodies when the FortiOS
+- `FTNT_PKI_LOCAL_CERT_PASS_FILES` entries pair positionally with
+  keyed `FTNT_PKI_LOCAL_CERTS` entries whose private keys are encrypted.
+- `FTNT_PKI_CRLS` entries are installed as base64 bodies when the FortiOS
   version has a CRL config tree. On older versions without that tree, each CRL
   is staged under `/tftpboot/pki/` and installed with the TFTP import command.
 
@@ -312,11 +324,11 @@ ssl-ssh-profile wiring.
 
 ## Extra Disks
 
-Set `FOS_DISK_SPECS` to add disks:
+Set `FTNT_DISK_SPECS` to add disks:
 
 ```yaml
 env:
-  FOS_DISK_SPECS: "10g,10g"
+  FTNT_DISK_SPECS: "10g,10g"
 ```
 
 This creates `empty1.qcow2`, `empty2.qcow2`, and so on, and attaches them as
@@ -326,9 +338,9 @@ storage. The launcher formats remaining configured disks during bootstrap.
 Expected FortiOS storage usage for common test cases:
 
 ```text
-FOS_DISK_SPECS unset      -> no configured storage usage
-FOS_DISK_SPECS="10g"     -> order 1 usage log
-FOS_DISK_SPECS="10g,10g" -> order 1 usage log, order 2 usage wanopt
+FTNT_DISK_SPECS unset      -> no configured storage usage
+FTNT_DISK_SPECS="10g"     -> order 1 usage log
+FTNT_DISK_SPECS="10g,10g" -> order 1 usage log, order 2 usage wanopt
 ```
 
 Disk formatting during bootstrap adds roughly a minute per additional
@@ -353,7 +365,7 @@ How it works:
   `starting` while a probe run is in flight, so a slow-but-progressing
   bootstrap holds `starting` for as long as it likes — no fixed start
   period to size against disk count or platform.
-- If no new heartbeat byte arrives for `FOS_HEALTHCHECK_STALL_SECONDS`
+- If no new heartbeat byte arrives for `FTNT_HEALTHCHECK_STALL_SECONDS`
   (default 90 s), the launcher is wedged: the probe exits 1 and Docker
   marks the container unhealthy after `--retries` strikes.
 - Once bootstrap has completed, the probe defers to the classic check:
@@ -431,7 +443,7 @@ secret change, because the value is opaque. There is therefore a tradeoff:
 - By default, ENC-only differences count as changes. This preserves a real
   secret-only update on an existing entry, but regenerated ENC values can cause
   an otherwise unchanged entry to be included in `current.conf`.
-- Set `FOS_NO_ENC_CONFIG=true` to ignore ENC-only differences on existing
+- Set `FTNT_NO_ENC_CONFIG=true` to ignore ENC-only differences on existing
   entries. This avoids captures caused only by regenerated ENC values, but a
   real secret-only update on an existing entry will not be captured.
 
@@ -452,7 +464,7 @@ User-visible behavior includes:
 - default credential handling across FortiOS 6.4, 7.x, and 8.x behavior
 - password-policy failure surfaced as a startup error
 - bootstrap feature failures stop startup by default; with
-  `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, failures at a command prompt are logged
+  `FTNT_EXIT_ON_BOOTSTRAP_ERROR=false`, failures at a command prompt are logged
   and that feature is skipped while remaining features continue. A rejected
   desired-password login always gets one retry with the last accepted
   credentials for that login; the desired credentials remain active for later

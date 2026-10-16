@@ -3,6 +3,7 @@
 import os
 
 from ..cli_commands import ConfigBlock, EditBlock
+from ..env import has_env
 from .base import StaticFeature
 
 
@@ -17,10 +18,15 @@ class ApplyStartupConfig(StaticFeature):
 def filter_startup_config_blocks(blocks, logger):
     """Skip startup DNS configuration that conflicts with FortiGuard hook DNS."""
     if not (
-        "FOS_FORTIGUARD_HOOKS" in os.environ
+        has_env("FOS_FORTIGUARD_HOOKS")
         and (
-            "FOS_MGMT_DNS_PRIMARY" in os.environ
-            or "FOS_MGMT_DNS_SECONDARY" in os.environ
+            has_env("FOS_MGMT_DNS_PRIMARY", aliases=("FTNT_DNS_PRIMARY",))
+            or has_env(
+                "FOS_MGMT_DNS_SECONDARY",
+                aliases=("FTNT_DNS_SECONDARY",),
+                legacy_aliases=("FTNT_MGMG_DNS_SECONDARY", "FOS_MGMG_DNS_SECONDARY"),
+            )
+            or has_env("FTNT_DNS_PROTOCOL")
         )
     ):
         return blocks
@@ -33,8 +39,8 @@ def filter_startup_config_blocks(blocks, logger):
     if len(filtered) != len(blocks):
         logger.warning(
             "Skipping startup config block 'config system dns' because "
-            "FOS_FORTIGUARD_HOOKS is present with FOS_MGMT_DNS_PRIMARY or "
-            "FOS_MGMT_DNS_SECONDARY"
+            "FTNT_FORTIGUARD_HOOKS is present with FTNT_DNS_PRIMARY, "
+            "FTNT_DNS_SECONDARY, or FTNT_DNS_PROTOCOL"
         )
     return filtered
 

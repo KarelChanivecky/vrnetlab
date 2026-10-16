@@ -1,6 +1,5 @@
 import cmd
 import logging
-import os
 import re
 import threading
 import time
@@ -8,6 +7,7 @@ from collections import deque
 from contextlib import contextmanager
 
 from .common import TRACE_LEVEL
+from .env import get_env
 
 
 DEFAULT_BUFFER_LIMIT_BYTES = 1024 * 1024
@@ -17,7 +17,7 @@ RAW_SERIAL_LOG_ENV = "FOS_LOG_RAW_SERIAL"
 
 
 def terminal_buffer_limit_bytes():
-    configured = os.getenv(BUFFER_LIMIT_ENV)
+    configured = get_env(BUFFER_LIMIT_ENV)
     if not configured:
         return DEFAULT_BUFFER_LIMIT_BYTES
 
@@ -232,7 +232,7 @@ class Terminal:
                 self._enforce_buffer_limit()
                 received.extend(data)
                 if (
-                    os.getenv(RAW_SERIAL_LOG_ENV, "").lower() in ("1", "true", "yes")
+                    get_env(RAW_SERIAL_LOG_ENV, "").lower() in ("1", "true", "yes")
                     and self._output_suppression_depth == 0
                 ):
                     self._logger.log(TRACE_LEVEL - 1, f"buffer: {self._buffer}")

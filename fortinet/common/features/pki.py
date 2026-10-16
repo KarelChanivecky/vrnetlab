@@ -12,18 +12,18 @@ certificate CN.
 
 Env variables:
 
-- ``FOS_PKI_CA_CERTS``: ``refname:path`` — CAs installed in
+- ``FTNT_PKI_CA_CERTS``: ``refname:path`` — CAs installed in
   ``config vpn certificate ca`` and named by refname or CN.
-- ``FOS_PKI_LOCAL_CERTS``: ``refname:key_path:cert_path`` — installed as
+- ``FTNT_PKI_LOCAL_CERTS``: ``refname:key_path:cert_path`` — installed as
   local certificate entries named by refname or CN, including the SSL
   deep-inspection CA pair (which is just a local cert). Both the private key
   and certificate are required.
-- ``FOS_PKI_LOCAL_CERT_PASS_FILES``: ``path;path;...`` — positionally paired
+- ``FTNT_PKI_LOCAL_CERT_PASS_FILES``: ``path;path;...`` — positionally paired
   with encrypted-key ``refname:key_path:cert_path`` entries; the contents
   are typed as ``set password``.
-- ``FOS_PKI_REMOTE_CERTS``: ``refname:path`` — remote certificates installed
+- ``FTNT_PKI_REMOTE_CERTS``: ``refname:path`` — remote certificates installed
   in ``config vpn certificate remote`` and named by refname or CN.
-- ``FOS_PKI_CRLS``: ``refname:path`` — CRLs installed as ``config vpn
+- ``FTNT_PKI_CRLS``: ``refname:path`` — CRLs installed as ``config vpn
   certificate crl`` entries with PEM contents when that tree is available,
   otherwise imported over TFTP, named by refname or file basename.
 """
@@ -38,6 +38,7 @@ from ..cli_commands import (
     CommandSpec,
     SetValue,
 )
+from ..env import get_env
 from .base import Feature
 
 
@@ -205,11 +206,11 @@ class InstallPkiCertificates(Feature):
         super().__init__(vm, commander, "pki-certificates")
         self._logger = commander.logger
         self._tftp_server_ip = vm.mgmt_gw_ipv4
-        self._ca_paths = parse_ca_certs(os.getenv(CA_CERTS_ENV))
-        self._local_entries = parse_local_certs(os.getenv(LOCAL_CERTS_ENV))
-        self._pass_files = parse_pass_files(os.getenv(LOCAL_CERT_PASS_FILES_ENV))
-        self._remote_paths = parse_remote_certs(os.getenv(REMOTE_CERTS_ENV))
-        self._crl_paths = parse_crls(os.getenv(CRLS_ENV))
+        self._ca_paths = parse_ca_certs(get_env(CA_CERTS_ENV))
+        self._local_entries = parse_local_certs(get_env(LOCAL_CERTS_ENV))
+        self._pass_files = parse_pass_files(get_env(LOCAL_CERT_PASS_FILES_ENV))
+        self._remote_paths = parse_remote_certs(get_env(REMOTE_CERTS_ENV))
+        self._crl_paths = parse_crls(get_env(CRLS_ENV))
         self._paired_locals = self._pair_pass_files()
         self._staging_directory = TFTP_PKI_DIRECTORY
         self._phase = "idle"

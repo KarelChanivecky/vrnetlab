@@ -1,10 +1,10 @@
 """Additional disk formatting feature."""
 
-import os
 import re
 
 from ..cli_commands import CommandSequence, CommandSpec, SessionLossAction
 from ..common import FOSCliState
+from ..env import get_env
 
 from .base import Feature
 
@@ -14,7 +14,7 @@ class FormatDisks(Feature):
 
     def __init__(self, vm, commander):
         super().__init__(vm, commander, "disk-format")
-        self._count = max(0, len(os.getenv("FOS_DISK_SPECS", "").split(",")) - 1)
+        self._count = max(0, len(get_env("FOS_DISK_SPECS", "").split(",")) - 1)
         self._disk_number = 2
         self._phase = "list"
 

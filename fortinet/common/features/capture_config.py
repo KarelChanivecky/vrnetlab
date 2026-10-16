@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..cli_commands import CommandSequence, CommandSpec
 from ..config_diff import diff_config
+from ..env import get_env
 
 from .base import Feature
 
@@ -355,7 +356,7 @@ class ConfigSaveFeature(Feature):
 
     @staticmethod
     def config_delta(baseline, current):
-        no_enc = os.getenv("FOS_NO_ENC_CONFIG", "false").lower() in (
+        no_enc = get_env("FOS_NO_ENC_CONFIG", "false").lower() in (
             "1", "true", "yes", "on"
         )
         return diff_config(baseline, current, track_encrypted_changes=not no_enc)

@@ -6,6 +6,7 @@ import time
 
 from ..cli_commands import CommandSequence, CommandSpec, SessionLossAction
 from ..common import BOOTSTRAP_HOSTNAME_REGEX, FOSCliState
+from ..env import get_env
 
 from .base import Feature
 
@@ -24,14 +25,14 @@ LICENSE_FAILURE_PATTERN = re.compile(rb"(?mi)license install failed")
 
 
 def license_status_timeout_seconds():
-    value = os.getenv("FOS_LICENSE_STATUS_TIMEOUT_SECONDS")
+    value = get_env("FOS_LICENSE_STATUS_TIMEOUT_SECONDS")
     if not value:
         return DEFAULT_LICENSE_STATUS_TIMEOUT_SECONDS
     return int(value)
 
 
 def wait_for_valid_license():
-    return os.getenv("FOS_WAIT_FOR_VALID_LICENSE", "false").strip().lower() == "true"
+    return get_env("FOS_WAIT_FOR_VALID_LICENSE", "false").strip().lower() == "true"
 
 
 class SetLicense(Feature):
@@ -219,7 +220,7 @@ class WaitForLicenseValidation(Feature):
         return match.group(1).decode(errors="replace").strip() if match else None
 
     def _log_status_output(self, output, status):
-        if os.getenv(
+        if get_env(
             LOG_LICENSE_STATUS_OUTPUT_ENV, "false"
         ).strip().lower() != "true":
             return

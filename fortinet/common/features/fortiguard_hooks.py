@@ -4,12 +4,13 @@ import os
 import re
 
 from ..cli_commands import CommandSequence, CommandSpec, ConfigBlock
+from ..env import get_env
 
 from .base import Feature, StaticFeature
 
 
 def fortiguard_hooks_enabled():
-    return os.getenv("FOS_FORTIGUARD_HOOKS", "false").lower() == "true"
+    return get_env("FOS_FORTIGUARD_HOOKS", "false").lower() == "true"
 
 
 class ConfigureFortiGuardHooks(StaticFeature):

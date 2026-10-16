@@ -34,7 +34,7 @@ BOOTSTRAP_HOSTNAME_REGEX = (
     rb"(?:" + GENERIC_HOSTNAME_REGEX + rb"|" + DEFAULT_HOSTNAME_REGEX + rb"|" + LICENSED_HOSTNAME_REGEX + rb")"
 )
 PROMPT_CONTEXT_REGEX = rb"(?:[ \t]+\([^)]+\))*"
-DEFAULT_HOSTNAME_PROMPT = rb"(?m)^[ \t]*" + BOOTSTRAP_HOSTNAME_REGEX + PROMPT_CONTEXT_REGEX + rb"[ \t]*[#$][ \t]*$"
+DEFAULT_HOSTNAME_PROMPT = rb"(?m)^[ \t]*" + BOOTSTRAP_HOSTNAME_REGEX + PROMPT_CONTEXT_REGEX + rb"[ \t]*[#$][ \t]*\r?$"
 DEFAULT_HOSTNAME_PROMPT_ECHO = rb"(?m)^[ \t]*" + BOOTSTRAP_HOSTNAME_REGEX + PROMPT_CONTEXT_REGEX + rb"[ \t]*[#$][ \t]*[^\r\n]+(?:\r?\n)?"
 
 FOS_CLI_STATE_PATTERNS = [None] * FOSCliState.UNKNOWN.value
@@ -61,7 +61,7 @@ FOS_CLI_STATE_PATTERNS[FOSCliState.CURRENT_PASSWORD.value] = (
 FOS_CLI_STATE_PATTERNS[FOSCliState.CONFIRMATION.value] = rb"(?mi)Do you want to continue\?"
 FOS_CLI_STATE_PATTERNS[FOSCliState.CHANGE_PASSWORD_CONFIRM.value] = rb"(?mi)^Confirm Password:[ \t]*"
 FOS_CLI_STATE_PATTERNS[FOSCliState.MORE_PROMPT.value] = rb"--More--\s*"
-FOS_CLI_STATE_PATTERNS[FOSCliState.MULTILINE_PROMPT.value] = rb"(?m)^>[ \t]*$"
+FOS_CLI_STATE_PATTERNS[FOSCliState.MULTILINE_PROMPT.value] = rb"(?m)^>[ \t]*\r?$"
 
 DEF_POLICY_COMPLIANT_PASSWORD = "FortinetFOS1!"
 DEFAULT_USERNAME = "admin"

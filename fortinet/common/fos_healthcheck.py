@@ -28,9 +28,14 @@ import os
 import sys
 import time
 
-HEALTH_FILE = os.environ.get("FOS_HEALTH_FILE", "/health")
-HEARTBEAT_FILE = os.environ.get("FOS_HEARTBEAT_FILE", "/healthbeat")
-STALL_SECONDS = float(os.environ.get("FOS_HEALTHCHECK_STALL_SECONDS", "90"))
+try:
+    from .env import get_env
+except ImportError:  # Executed directly as /common/fos_healthcheck.py in the image.
+    from env import get_env
+
+HEALTH_FILE = get_env("FOS_HEALTH_FILE", "/health")
+HEARTBEAT_FILE = get_env("FOS_HEARTBEAT_FILE", "/healthbeat")
+STALL_SECONDS = float(get_env("FOS_HEALTHCHECK_STALL_SECONDS", "90"))
 
 # How often a blocking probe re-checks the heartbeat file. Only the
 # stall window accuracy depends on this; the daemon never sees it.

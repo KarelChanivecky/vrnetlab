@@ -1,14 +1,13 @@
 """Default FortiOS settings feature."""
 
-import os
-
 from ..cli_commands import ConfigBlock
+from ..env import get_env
 
 from .base import StaticFeature
 
 
 def onboarding_enabled():
-    return os.getenv("FOS_ONBOARDING", "false").lower() == "true"
+    return get_env("FOS_ONBOARDING", "false").lower() == "true"
 
 
 class DefaultConfig(StaticFeature):

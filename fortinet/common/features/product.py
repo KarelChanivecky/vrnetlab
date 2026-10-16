@@ -1,11 +1,11 @@
 """Validate the product family and optional FortiOS version constraint."""
 
-import os
 import re
 from dataclasses import dataclass
 
 from .base import Feature
 from .image_info import FortiOSVersion
+from ..env import get_env
 
 
 VERSION_CONSTRAINT = re.compile(
@@ -81,9 +81,9 @@ class ValidateProduct(Feature):
     def __init__(self, vm, commander, expected_product):
         super().__init__(vm, commander, "product-validation")
         self.expected_product = expected_product
-        self.skip = os.getenv("FOS_SKIP_PRODUCT_CHECK", "").strip().lower() == "true"
+        self.skip = get_env("FOS_SKIP_PRODUCT_CHECK", "").strip().lower() == "true"
         self.constraint = None if self.skip else parse_version_constraint(
-            os.getenv("FOS_PRODUCT_VERSION")
+            get_env("FOS_PRODUCT_VERSION")
         )
 
     def activate(self):
@@ -97,7 +97,7 @@ class ValidateProduct(Feature):
                 f"Image product mismatch: expected {self.expected_product}, got {product}"
             )
         if self.constraint is not None and (version is None or not self.constraint.matches(version)):
-            expected = os.getenv("FOS_PRODUCT_VERSION")
+            expected = get_env("FOS_PRODUCT_VERSION")
             actual = str(version) if version is not None else "unknown"
             raise RuntimeError(f"Image version mismatch: expected {expected}, got {actual}")
         self.commander.logger.info("Validated product %s (%s)", product, version)

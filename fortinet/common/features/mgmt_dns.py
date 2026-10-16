@@ -32,7 +32,11 @@ class ConfigureMgmtDns(Feature):
         if self._phase == "inspect":
             self._phase = "apply"
             self.commander.submit_block(self, ConfigBlock("system dns", [
-                "set protocol cleartext",
+                # Older FortiOS builds do not expose this field.
+                CommandSpec(
+                    f"set protocol {self.vm.mgmt_dns_protocol}",
+                    fail_on_error=False,
+                ),
                 f"set primary {self.vm.mgmt_dns_primary}",
                 f"set secondary {self.vm.mgmt_dns_secondary}",
             ]))

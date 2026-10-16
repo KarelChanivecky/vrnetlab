@@ -31,6 +31,7 @@ from .features import (
     ApplyStartupConfig,
     ValidateProduct,
 )
+from .env import get_env
 from .fos_cli_driver import FOSCliDriver
 from .fos_commander import FOSCommander
 from .host_forwarded_bridge import HostForwardedBridge
@@ -56,7 +57,7 @@ TRACE_LEVEL_NUM = TRACE_LEVEL
 # Appended to once per main-loop iteration; fos_healthcheck.py watches this
 # file to tell a slow bootstrap from a wedged launcher. Keep in sync with the
 # HEARTBEAT_FILE default in fos_healthcheck.py.
-HEARTBEAT_FILE = os.getenv("FOS_HEARTBEAT_FILE", "/healthbeat")
+HEARTBEAT_FILE = get_env("FOS_HEARTBEAT_FILE", "/healthbeat")
 logging.addLevelName(TRACE_LEVEL_NUM, "\x1b[1;35m\tTRACE\x1b[0m")
 LOG_LEVEL_NAMES = {
     "TRACE": TRACE_LEVEL_NUM,
@@ -108,8 +109,22 @@ def exit_on_bootstrap_error(value=None):
     misspelled or otherwise invalid value keeps the fail-fast behavior.
     """
     if value is None:
-        value = os.getenv("FOS_EXIT_ON_BOOTSTRAP_ERROR", "true")
+        value = get_env("FOS_EXIT_ON_BOOTSTRAP_ERROR", "true")
     return str(value).strip().lower() != "false"
+
+
+def container_dns_servers(path="/etc/resolv.conf"):
+    """Return nameserver addresses configured for this container, in order."""
+    try:
+        with open(path, encoding="utf-8") as resolver_config:
+            servers = []
+            for line in resolver_config:
+                fields = line.split()
+                if len(fields) >= 2 and fields[0] == "nameserver":
+                    servers.append(fields[1])
+            return servers
+    except OSError:
+        return []
 
 
 def apply_debug_feature_cutoff(features, stop_feature, logger):
@@ -205,10 +220,23 @@ class FortiOS_vm(vrnetlab.VM):
         self._mgmt_net = mgmt_net
         self.expected_product = expected_product
         self._mgmt_net.configure_vm_mgmt(self)
-        self.mgmt_dns_primary = os.getenv("FOS_MGMT_DNS_PRIMARY", "1.1.1.1")
-        self.mgmt_dns_secondary = os.getenv(
-            "FOS_MGMT_DNS_SECONDARY", os.getenv("FOS_MGMG_DNS_SECONDARY", "8.8.8.8")
+        container_dns = container_dns_servers()
+        primary_dns = get_env(
+            "FOS_MGMT_DNS_PRIMARY",
+            aliases=("FTNT_DNS_PRIMARY",),
         )
+        secondary_dns = get_env(
+            "FOS_MGMT_DNS_SECONDARY",
+            aliases=("FTNT_DNS_SECONDARY",),
+            legacy_aliases=("FTNT_MGMG_DNS_SECONDARY", "FOS_MGMG_DNS_SECONDARY"),
+        )
+        if primary_dns is None:
+            primary_dns = container_dns[0] if container_dns else "1.1.1.1"
+        if secondary_dns is None:
+            secondary_dns = container_dns[1] if len(container_dns) > 1 else "8.8.8.8"
+        self.mgmt_dns_primary = primary_dns
+        self.mgmt_dns_secondary = secondary_dns
+        self.mgmt_dns_protocol = get_env("FTNT_DNS_PROTOCOL", "cleartext")
         self.terminal = Terminal(self.tn, self.logger, default_wait=self.wait_pattern)
         desired_password = DEFAULT_PASSWORD if password is None else password
         self._bootstrap_username = DEFAULT_USERNAME
@@ -258,7 +286,7 @@ class FortiOS_vm(vrnetlab.VM):
         ]
         self._features = apply_debug_feature_cutoff(
             self._features,
-            os.getenv("FOS_DEBUG_FEATURE"),
+            get_env("FOS_DEBUG_FEATURE"),
             self.logger,
         )
         self._file_watcher = FeatureFileWatcher(self._features, self.logger)
@@ -268,7 +296,7 @@ class FortiOS_vm(vrnetlab.VM):
         )
 
         # Comma-separated list of disk sizes to install in the machine. as accepted by qemu-img create.
-        disk_specs = os.getenv("FOS_DISK_SPECS", "").split(",")
+        disk_specs = get_env("FOS_DISK_SPECS", "").split(",")
         if disk_specs[0] == '':
             self.logger.warning(
                 "No additional disks configured. Use FOS_DISK_SPECS to specify a comma-separated list of disk sizes")
@@ -438,7 +466,7 @@ def main(expected_product="FortiGate"):
     logging.basicConfig(format=LOG_FORMAT)
     logger = logging.getLogger()
 
-    logger.setLevel(parse_log_level(os.getenv("FOS_LOG_LEVEL")))
+    logger.setLevel(parse_log_level(get_env("FOS_LOG_LEVEL")))
 
     mgmt_passthrough = (
         os.environ.get("CLAB_MGMT_PASSTHROUGH", "").lower() == "true"
@@ -472,4 +500,4 @@ def main(expected_product="FortiGate"):
 
 
 if __name__ == "__main__":
-    main(os.getenv("FOS_EXPECTED_PRODUCT", "FortiGate"))
+    main(get_env("FOS_EXPECTED_PRODUCT", "FortiGate"))

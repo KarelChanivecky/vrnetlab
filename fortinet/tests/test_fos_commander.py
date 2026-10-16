@@ -1,14 +1,19 @@
 """Regression tests for FortiOS bootstrap feature error recovery."""
 
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from fos.cli_commands import CommandAttempt, CommandSequence, CommandSpec
-from fos.common import FOSCliState
-from fos.features.base import Feature
-from fos.features.license import WaitForLicenseValidation
-from fos.fos_commander import FOSCommander
-from fos.terminal import Data
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+from fortinet.common.cli_commands import CommandAttempt, CommandSequence, CommandSpec
+from fortinet.common.common import FOSCliState
+from fortinet.common.features.base import Feature
+from fortinet.common.features.license import WaitForLicenseValidation
+from fortinet.common.fos_commander import FOSCommander
+from fortinet.common.terminal import Data
 
 
 class TestLicenseTimeoutRecovery(unittest.TestCase):
@@ -18,18 +23,18 @@ class TestLicenseTimeoutRecovery(unittest.TestCase):
         self.commander = FOSCommander(
             self.terminal, self.logger, continue_on_error=True
         )
-        with patch("fos.features.license.os.path.exists", return_value=True):
+        with patch("fortinet.common.features.license.os.path.exists", return_value=True):
             self.license = WaitForLicenseValidation(None, self.commander)
         self.following = Feature(None, self.commander, "following")
         self.commander.start([self.license, self.following])
-        with patch("fos.features.license.time.monotonic", return_value=0):
+        with patch("fortinet.common.features.license.time.monotonic", return_value=0):
             self.commander.on_state(FOSCliState.CMD_PROMPT, Data(b""))
             status = CommandAttempt(CommandSpec("get system status"), 1, 0)
             status.output.extend(b"License Status: Pending\r\n")
             self.license.on_command_executed(status, FOSCliState.CMD_PROMPT)
 
     def test_idle_prompt_recovers_once_after_license_timeout(self):
-        with patch("fos.features.license.time.monotonic", return_value=121):
+        with patch("fortinet.common.features.license.time.monotonic", return_value=121):
             self.commander.on_state(FOSCliState.TN_TIMEOUT, Data(b""))
             self.commander.tick()
             self.commander.tick()

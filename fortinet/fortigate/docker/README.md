@@ -1,6 +1,6 @@
 # Shared FortiOS Launcher Internals
 
-The shared launcher source is in [`../../common/fos`](../../common/fos). The
+The shared launcher source is in [`../../common`](../../common). The
 FortiGate and FortiProxy Docker Makefiles stage that package with a small
 product-specific `launch.py` wrapper. The public FortiGate API is documented in
 [`../README.md`](../README.md). This file documents how the launcher works
@@ -47,7 +47,7 @@ Important behavior:
   inspection path must call `data.discard(...)` if it has assigned meaning to
   those bytes. Otherwise the bytes stay in the terminal buffer and can be
   matched again when later output completes a prompt or state.
-- Retained terminal data is bounded by `FOS_TERMINAL_BUFFER_LIMIT_BYTES`, which
+- Retained terminal data is bounded by `FTNT_TERMINAL_BUFFER_LIMIT_BYTES`, which
   defaults to 1 MiB. If the buffer grows beyond that limit, bootstrap fails
   instead of truncating data, because oversized retained output means some layer
   failed to consume bytes it understood.
@@ -199,7 +199,7 @@ discarded through `Data`; output that is not understood must remain buffered so
 it can be completed by later serial data.
 
 The retained terminal buffer has a hard upper bound. The default is 1 MiB, set
-with `FOS_TERMINAL_BUFFER_LIMIT_BYTES` when a larger diagnostic window is needed.
+with `FTNT_TERMINAL_BUFFER_LIMIT_BYTES` when a larger diagnostic window is needed.
 The limit is intentionally enforced as an error rather than a ring buffer: if
 retained data grows without being consumed, the command/feature/commander stack
 has lost ownership of some output and continuing would risk replaying stale
@@ -207,7 +207,7 @@ bytes into later state decisions.
 
 ## Feature Architecture
 
-Bootstrap work is split into feature objects under `fos/features/`. A feature has a
+Bootstrap work is split into feature objects under `common/features/`. A feature has a
 name, lifecycle hooks, optional file-watch integration, and zero or more command
 blocks.
 
@@ -237,7 +237,7 @@ Current bootstrap stages are:
   platform, major, minor, patch, and build on `vm.fos_version` for later
   features
 - `product-validation`: validates `vm.fos_product` and `vm.fos_version` against
-  the product wrapper and optional `FOS_PRODUCT_VERSION` constraint
+  the product wrapper and optional `FTNT_PRODUCT_VERSION` constraint
 - `management`: configures `port1`, FortiGuard interface selection, and the
   management route for static management addressing
 - `bootstrap-dns`: temporarily sets DNS for license/bootstrap reachability
@@ -249,9 +249,9 @@ Current bootstrap stages are:
 - `management-after-license`: reapplies management after license restore because
   FortiOS can remove routes or drop sessions when registration state changes
 - `fortiguard-hooks-after-license`: reapplies the FortiGuard hook settings after
-  the license reboot whenever `FOS_FORTIGUARD_HOOKS` is enabled
+  the license reboot whenever `FTNT_FORTIGUARD_HOOKS` is enabled
 - `license-validation`: accepts `Valid`, and accepts `Grace Period` unless
-  `FOS_WAIT_FOR_VALID_LICENSE=true`; `Pending` and strict-mode `Grace Period`
+  `FTNT_WAIT_FOR_VALID_LICENSE=true`; `Pending` and strict-mode `Grace Period`
   are retried until the configured timeout
 - `management-vrf`: moves management into VRF 1 when supported, or narrows
   the management route on FortiProxy
@@ -261,7 +261,7 @@ Current bootstrap stages are:
 - `capture-config`: records a clean baseline and later services `/get-config`
   runtime captures
 - `pki-certificates`: installs CA, local, remote, and CRL objects from
-  `FOS_PKI_*` path variables; failed config installs fall back to TFTP where
+  `FTNT_PKI_*` path variables; failed config installs fall back to TFTP where
   supported, warning on successful fallback and failing bootstrap if both
   methods fail
 - `startup-config`: imports the user-supplied startup config
@@ -280,7 +280,7 @@ is accepted. An empty trigger (a human `touch`) still works and gets a
 generated id. See the `fortigate/README.md` "Saving Config" section.
 
 Bootstrap feature errors are fatal by default. With
-`FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, a failed feature is logged and skipped
+`FTNT_EXIT_ON_BOOTSTRAP_ERROR=false`, a failed feature is logged and skipped
 when FortiOS is back at a command prompt, and the remaining startup features
 continue. This is best effort: commands that already ran are not undone, and a
 run with skipped features is not reported healthy. Credential fallback remains
